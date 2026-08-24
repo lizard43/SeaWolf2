@@ -1,0 +1,6 @@
+cfg/
+
+roms/
+src/*.bin
+src/*.lst
+
