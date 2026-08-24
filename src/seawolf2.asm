@@ -7,6 +7,65 @@
 ;
 ;===============================================================================
 
+;===============================================================================
+; Remaining raw-region inventory
+;
+; Every byte still emitted with DB is classified below.  The inventory covers
+; 4,517 bytes in 35 address spans; no DB byte is omitted.  Native and TERSE
+; spans are conversion work.  Table, graphics/text and padding spans are true
+; data and should remain data, although their internal labels can still improve.
+;
+; NATIVE Z80 AWAITING PROMOTION                 14 spans / 1,611 bytes
+;   $0302-$0320  work/video clear primitive
+;   $0321-$0354  machine and interrupt initialization
+;   $0365-$036E  main-state initializer and TERSE entry
+;   $0385-$0396  runtime-state reset prefix
+;   $03F6-$0500  start selection and prompt control
+;   $0501-$0526  prompt pointer-list renderer
+;   $0527-$0543  language-selection reader
+;   $0593-$0612  playfield clear and score update
+;   $06B5-$0734  score/bonus and station-state handling
+;   $0735-$07FB  extended-play, lamp and timer-display handling
+;   $0B4C-$0BDE  post-hit status and expired-score clearing
+;   $0C1A-$0C55  congratulations state and display
+;   $0C6E-$0D47  text/BCD primitives and diving-target presentation
+;   $15D7-$16F4  native text and small-bitmap renderer
+;
+; TERSE INTERPRETER PROGRAM                     1 span / 22 bytes
+;   $036F-$0384  MAIN_INITIALIZATION_THREAD inline cells and operands
+;   Other TERSE programs are already expressed as labeled DW cells.
+;
+; LOOKUP / PROPERTY / POINTER TABLES             9 spans / 490 DB bytes
+;   $0184-$0185  video-RAM diagnostic range parameters
+;   $0199-$019A  work-RAM diagnostic range parameters
+;   $0355-$0364  initial RAM template copied to $C212
+;   $0D48-$0DC7  two 64-byte player-torpedo trajectory tables
+;   $0DC8-$0DD1  moving-target type sequence
+;   $0DD2-$0DDA  target horizontal-speed table
+;   $0DDB-$0E3E  four complete 25-byte object templates
+;   $19D8-$1A52  decoded raster-schedule scalar fields; pointers use DW
+;   $1A53-$1AE6  bitmap pointers, collision lanes and frame thresholds
+;
+; GRAPHICS, TEXT OR DIAGNOSTIC PATTERN DATA       9 spans / 2,317 bytes
+;   $00B0-$00E7  self-test color/pixel patterns
+;   $0E3F-$119E  object and animation bitmaps
+;   $119F-$135B  character font
+;   $135C-$136F  player-status graphics
+;   $1370-$1384  title and diving-target labels
+;   $1AE7-$1B58  short game-state messages
+;   $1BC3-$1C72  English prompt text
+;   $1CDD-$1E91  German prompt text
+;   $1EFC-$1FB3  French prompt text
+;
+; PADDING OR UNUSED ROM                          1 span / 76 bytes
+;   $1FB4-$1FFF  erased-ROM fill; $1FFF is the block checksum adjustment
+;
+; GENUINELY UNCERTAIN                            1 span / 1 byte
+;   $1385        unreferenced $8E between TEXT_SUB and the $1386 ISR entry
+;
+; Inventory invariant: remaining DB byte count = 4,517.
+;===============================================================================
+
 PORT_COLOR_0            EQU     $00
 PORT_COLOR_1            EQU     $01
 PORT_COLOR_2            EQU     $02
@@ -135,12 +194,22 @@ TARGET_SCHEDULER_CURSOR     EQU $C1C2
 MINE_SCHEDULER_CURSOR       EQU $C1C4
 TORPEDO_SCHEDULER_CURSOR    EQU $C1C6
 
-TARGET_TYPE_SEQUENCE        EQU $0DC8
-TARGET_SPEED_TABLE          EQU $0DD2
-OBJECT_INITIAL_TEMPLATES    EQU $0DDB
-OBJECT_BITMAP_SET_TABLE     EQU $1AC3
-TORPEDO_COLLISION_LANE_TABLE EQU $1AD5
-TORPEDO_FRAME_Y_TABLE       EQU $1AE4
+; Raster-interrupt scheduler state.  Each ROM schedule record is ten bytes:
+; scanline, reserved byte, colors 4-7, then the IM2 vector and motion-state
+; pointers used for the following schedule record.
+INTERRUPT_SCHEDULE_CURSOR   EQU $C1FC
+INTERRUPT_SCHEDULE_BASE     EQU $C20D
+INTERRUPT_BASE_SCANLINE     EQU $C20F
+INTERRUPT_MOTION_STATE_PTR  EQU $C210
+
+RASTER_MOTION_STATE_0       EQU $C212
+RASTER_MOTION_STATE_1       EQU $C216
+RASTER_MOTION_STATE_2       EQU $C21A
+RASTER_MOTION_STATE_3       EQU $C21E
+
+RASTER_SCHEDULE_RECORD_SIZE EQU $0A
+RASTER_SCHEDULE_END         EQU $FF
+RASTER_MOTION_PERIOD        EQU $50
 
 ; Frame-timed discrete-sound producers.  The interrupt handler treats every
 ; nonzero byte as an asserted line and decrements the timers at 60 Hz.
@@ -740,29 +809,32 @@ INITIALIZE_MACHINE:
                         DB      $D3,$0E                 ; $0324  OUT ($0E),A
                         DB      $ED,$5E                 ; $0326  IM 2
                         DB      $01,$10,$00             ; $0328  LD BC,$0010
-                        DB      $21,$55,$03             ; $032B  LD HL,$0355
-                        DB      $11,$12,$C2             ; $032E  LD DE,$C212
+                        DB      $21,$55,$03             ; $032B  LD HL,INITIAL_RAM_TEMPLATE
+                        DB      $11,$12,$C2             ; $032E  LD DE,RASTER_MOTION_STATE_0
                         DB      $ED,$B0                 ; $0331  LDIR
                         DB      $DB,$13                 ; $0333  IN A,($13)
                         DB      $E6,$40                 ; $0335  AND $40
-                        DB      $21,$16,$1A             ; $0337  LD HL,$1A16
+                        DB      $21,$16,$1A             ; $0337  LD HL,INTERRUPT_SCHEDULE_SET_B
                         DB      $28,$03                 ; $033A  JR Z,$033F
-                        DB      $21,$D8,$19             ; $033C  LD HL,$19D8
-                        DB      $22,$FC,$C1             ; $033F  LD ($C1FC),HL
-                        DB      $22,$0D,$C2             ; $0342  LD ($C20D),HL
+                        DB      $21,$D8,$19             ; $033C  LD HL,INTERRUPT_SCHEDULE_SET_A
+                        DB      $22,$FC,$C1             ; $033F  LD (INTERRUPT_SCHEDULE_CURSOR),HL
+                        DB      $22,$0D,$C2             ; $0342  LD (INTERRUPT_SCHEDULE_BASE),HL
                         DB      $3E,$2A                 ; $0345  LD A,$2A
                         DB      $D3,$09                 ; $0347  OUT ($09),A
-                        DB      $CD,$48,$14             ; $0349  CALL $1448
+                        DB      $CD,$48,$14             ; $0349  CALL ALTERNATE_RASTER_INTERRUPT_HANDLER
                         DB      $C1                     ; $034C  POP BC
                         DB      $21,$C8,$0D             ; $034D  LD HL,$0DC8
                         DB      $22,$0B,$C2             ; $0350  LD ($C20B),HL
                         DB      $FD,$E9                 ; $0353  JP (IY)
 
 ;-------------------------------------------------------------------------------
-; $0355: Sixteen bytes copied to RAM at $C212
+; $0355: Initial state for the four moving raster boundaries
 ;-------------------------------------------------------------------------------
 INITIAL_RAM_TEMPLATE:
-                        DB      $04,$04,$00,$00,$18,$08,$00,$00,$2C,$10,$00,$00,$40,$20,$00,$00 ; $0355  ........,...  ..
+                        DB      $04,$04,$00,$00         ; $C212: base $18 phase/velocity/offset
+                        DB      $18,$08,$00,$00         ; $C216: base $30
+                        DB      $2C,$10,$00,$00         ; $C21A: base $54
+                        DB      $40,$20,$00,$00         ; $C21E: base $84
 
 ;-------------------------------------------------------------------------------
 ; $0365: Clear top-level state and enter its TERSE thread
@@ -1552,10 +1624,10 @@ torpedo_aim_nonnegative:
                         JR      C,torpedo_aim_in_range
                         LD      A,$3E
 torpedo_aim_in_range:   AND     $3E
-                        LD      HL,$0D48
+                        LD      HL,TORPEDO_TRAJECTORY_LEFT_TABLE
                         BIT     0,C
                         JR      Z,torpedo_trajectory_table
-                        LD      HL,$0D88
+                        LD      HL,TORPEDO_TRAJECTORY_RIGHT_TABLE
 torpedo_trajectory_table:
                         LD      E,A
                         LD      D,$00
@@ -1780,22 +1852,58 @@ coin_counter_done:      JP      (IY)
                         DB      $7B,$13,$CD,$D7,$15,$3E,$44,$32,$FF,$C1,$3E,$69,$32,$01,$C2,$21 ; $0D17  {....>D2..>i2..!
                         DB      $81,$13,$CD,$D7,$15,$06,$40,$76,$10,$FD,$21,$8E,$57,$11,$3C,$00 ; $0D27  ...... v..!.W.<.
                         DB      $AF,$0E,$32,$06,$14,$77,$23,$10,$FC,$19,$0D,$20,$F6,$32,$CA,$C1 ; $0D37  ..2..w#.... .2..
-                        DB      $C9,$90,$70,$8A,$6D,$85,$6A,$7F,$67,$7A,$64,$75,$61,$6F,$5E,$6A ; $0D47  ..p.m.j.gzduao^j
+                        DB      $C9                                                     ; $0D47  RET
+
+;-------------------------------------------------------------------------------
+; $0D48: Left-station torpedo launch X/velocity pairs
+;-------------------------------------------------------------------------------
+TORPEDO_TRAJECTORY_LEFT_TABLE:
+                        DB      $90,$70,$8A,$6D,$85,$6A,$7F,$67,$7A,$64,$75,$61,$6F,$5E,$6A ; $0D48
                         DB      $5B,$65,$58,$61,$55,$5C,$52,$57,$4F,$52,$4C,$4E,$49,$49,$46,$44 ; $0D57  [eXaU\RWORLNIIFD
                         DB      $43,$40,$40,$3B,$3D,$37,$3A,$33,$37,$2E,$34,$2A,$31,$26,$2E,$21 ; $0D67  C  ;=7:37.4*1&.!
                         DB      $2B,$1D,$28,$19,$25,$15,$22,$10,$1F,$0D,$1C,$08,$19,$04,$16,$00 ; $0D77  +.(.%.".........
-                        DB      $13,$9B,$00,$96,$FD,$92,$FA,$8E,$F7,$8A,$F4,$86,$F1,$81,$EE,$7D ; $0D87  ...............}
+                        DB      $13                                                     ; $0D87
+
+;-------------------------------------------------------------------------------
+; $0D88: Right-station torpedo launch X/velocity pairs
+;-------------------------------------------------------------------------------
+TORPEDO_TRAJECTORY_RIGHT_TABLE:
+                        DB      $9B,$00,$96,$FD,$92,$FA,$8E,$F7,$8A,$F4,$86,$F1,$81,$EE,$7D ; $0D88
                         DB      $EB,$79,$E8,$75,$E5,$70,$E2,$6C,$DF,$68,$DC,$63,$D9,$5F,$D6,$5A ; $0D97  .y.u.p.l.h.c._.Z
                         DB      $D3,$56,$D0,$51,$CD,$4D,$CD,$48,$CA,$43,$C7,$3E,$C4,$3A,$C1,$35 ; $0DA7  .V.Q.M.H.C.>.:.5
                         DB      $BE,$30,$BB,$2B,$B8,$25,$B5,$20,$B2,$1B,$AF,$16,$AC,$10,$A9,$0A ; $0DB7  .0.+.%. ........
-                        DB      $A6,$03,$00,$05,$04,$01,$03,$02,$04,$05,$FF,$40,$40,$40,$20,$20 ; $0DC7  ...........
-                        DB      $80,$00,$00,$40,$00,$00,$00,$00,$00,$00,$00,$00,$1A,$00,$00,$00 ; $0DD7  ... ............
+                        DB      $A6                                                     ; $0DC7
+
+;-------------------------------------------------------------------------------
+; $0DC8: Cyclic object-type sequence for the two moving-target lanes
+;-------------------------------------------------------------------------------
+TARGET_TYPE_SEQUENCE:
+                        DB      $03,$00,$05,$04,$01,$03,$02,$04,$05,$FF                 ; $0DC8
+
+;-------------------------------------------------------------------------------
+; $0DD2: Signed base horizontal speed indexed by object type
+;-------------------------------------------------------------------------------
+TARGET_SPEED_TABLE:
+                        DB      $40,$40,$40,$20,$20                                     ; $0DD2
+                        DB      $80,$00,$00,$40                                         ; $0DD7
+
+;-------------------------------------------------------------------------------
+; $0DDB: Four 25-byte records copied into target and torpedo pools
+;-------------------------------------------------------------------------------
+OBJECT_INITIAL_TEMPLATES:
+                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$1A,$00,$00,$00         ; $0DDB
                         DB      $80,$00,$00,$00,$00,$8C,$00,$00,$08,$00,$00,$04,$00,$00,$08,$00 ; $0DE7  ................
                         DB      $00,$00,$00,$00,$00,$33,$00,$00,$00,$80,$FF,$00,$8C,$00,$9F,$00 ; $0DF7  .....3..........
                         DB      $00,$48,$00,$00,$0C,$00,$00,$07,$00,$06,$00,$00,$FD,$00,$BE,$23 ; $0E07  .H.............#
                         DB      $00,$00,$00,$00,$00,$20,$00,$9F,$2D,$11,$08,$00,$00,$08,$00,$00 ; $0E17  ..... ..-.......
                         DB      $07,$00,$06,$00,$00,$FD,$00,$BE,$23,$00,$00,$00,$00,$00,$78,$00 ; $0E27  ........#.....x.
-                        DB      $9F,$2D,$11,$08,$00,$00,$04,$00,$05,$0C,$00,$00,$20,$00,$00,$00 ; $0E37  .-.......... ...
+                        DB      $9F,$2D,$11,$08,$00,$00,$04,$00                         ; $0E37
+
+;-------------------------------------------------------------------------------
+; $0E3F: Object bitmap descriptors and animation frames
+;-------------------------------------------------------------------------------
+OBJECT_BITMAP_DATA:
+                        DB      $05,$0C,$00,$00,$20,$00,$00,$00                         ; $0E3F
                         DB      $00,$00,$00,$00,$00,$0C,$E0,$00,$00,$00,$0E,$E3,$F8,$00,$00,$0E ; $0E47  ................
                         DB      $F3,$80,$00,$1F,$DF,$F7,$DF,$E0,$03,$DF,$F7,$DE,$00,$3F,$FF,$FF ; $0E57  .............?..
                         DB      $FF,$FF,$3F,$FF,$FF,$FF,$FE,$3F,$FF,$FF,$FF,$FC,$1F,$FF,$FF,$FF ; $0E67  ..?....?........
@@ -1907,14 +2015,42 @@ TEXT_SUPER:
 ; $1381: SUB label
 ;-------------------------------------------------------------------------------
 TEXT_SUB:
-                        DB      $53,$55,$42,$00,$8E,$08,$E3,$E3,$00,$00,$00,$00,$00,$00,$00,$00 ; $1381  SUB.............
-                        DB      $00,$00,$00,$00                                                 ; $1391  ....
+                        DB      $53,$55,$42,$00                                         ; $1381  SUB.
+
+; $1385 is neither referenced as data nor reached as code.  It is retained as
+; the inventory's sole genuinely uncertain byte rather than assigned a role.
+UNCERTAIN_1385:
+                        DB      $8E                                                     ; $1385
 
 ;-------------------------------------------------------------------------------
-; $1395: Frame interrupt entry and hardware update loop
+; $1386: Primary video-interrupt entry selected by the schedule tables
 ;-------------------------------------------------------------------------------
+; ADVANCE_INTERRUPT_SCHEDULE preloads the next boundary's color-4 value into
+; A'.  The entry swaps that value into A, waits exactly 90 Z80 T-states, then
+; changes color register 4 at the calibrated raster position.  The paired
+; EX (SP),HL instructions preserve both HL and the interrupted return address.
 VIDEO_INTERRUPT_HANDLER:
-                        OUT     ($04),A
+                        EX      AF,AF'
+                        EX      (SP),HL
+                        EX      (SP),HL
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+
+;-------------------------------------------------------------------------------
+; $1395: Primary video-interrupt body and hardware update loop
+;-------------------------------------------------------------------------------
+video_interrupt_handler_body:
+                        OUT     (PORT_COLOR_4),A
                         EX      AF,AF'
                         PUSH    AF
                         PUSH    BC
@@ -1922,8 +2058,11 @@ VIDEO_INTERRUPT_HANDLER:
                         PUSH    HL
                         PUSH    IX
                         PUSH    IY
-                        CALL    $1766
+                        CALL    ADVANCE_INTERRUPT_SCHEDULE
+                        ; Permit the five lightweight raster handlers to nest
+                        ; while this interrupt performs the frame workload.
                         EI
+                        ; Intentional input read; its value is discarded.
                         IN      A,(PORT_P2_HANDLE)
                         LD      HL,SOUND_FRAME_DIVIDER
                         LD      A,(HL)
@@ -2037,9 +2176,37 @@ save_coin_input:        POP     AF
                         POP     AF
                         EI
                         RET
-                        DB      $08,$E3,$E3,$00,$00,$00 ; $1448
-                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$D3,$04,$08,$F5,$E5,$CD,$66 ; $144E  ...............f
-                        DB      $17,$E1,$F1,$FB,$C9     ; $145E, interrupt tail
+;-------------------------------------------------------------------------------
+; $1448: Alternate raster-interrupt entry selected by the schedule tables
+;-------------------------------------------------------------------------------
+; This entry uses the same 90-T-state color-4 delay but saves only the registers
+; touched by ADVANCE_INTERRUPT_SCHEDULE.  It services the five non-frame raster
+; boundaries without running the game, object or sound workload.
+ALTERNATE_RASTER_INTERRUPT_HANDLER:
+                        EX      AF,AF'
+                        EX      (SP),HL
+                        EX      (SP),HL
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        NOP
+                        OUT     (PORT_COLOR_4),A
+                        EX      AF,AF'
+                        PUSH    AF
+                        PUSH    HL
+                        CALL    ADVANCE_INTERRUPT_SCHEDULE
+                        POP     HL
+                        POP     AF
+                        EI
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $1463: Update one moving target from the four-record target pool
@@ -2386,14 +2553,121 @@ SERVICE_MINE_POOL:      LD      HL,(MINE_SCHEDULER_CURSOR)
                         POP     AF
                         CALL    Z,DECAY_OBJECT_TIMER
                         RET
-                        DB      $2A,$FC,$C1,$23,$23,$23,$7E,$D3,$05 ; $1766
-                        DB      $23,$7E,$D3,$06,$23,$7E,$D3,$07,$23,$7D,$D3,$0D,$7C,$ED,$47,$23 ; $176F  #~..#~..#}..|.G#
-                        DB      $23,$7E,$32,$10,$C2,$23,$7E,$32,$11,$C2,$23,$7E,$FE,$FF,$20,$03 ; $177F  #~2..#~2..#~.. .
-                        DB      $2A,$0D,$C2,$22,$FC,$C1,$7E,$D3,$0F,$32,$0F,$C2,$23,$23,$08,$7E ; $178F  *.."..~..2..##.~
-                        DB      $08,$2A,$10,$C2,$7C,$B5,$C8,$35,$28,$1D,$23,$7E,$23,$CB,$7F,$20 ; $179F  .*..|..5(.#~#..
-                        DB      $0E,$86,$77,$23,$7E,$CE,$00,$77,$3A,$0F,$C2,$86,$D3,$0F,$C9,$86 ; $17AF  ..w#~..w:.......
-                        DB      $77,$23,$7E,$CE,$FF,$18,$F0,$36,$50,$23,$7E,$ED,$44,$77,$F2,$AB ; $17BF  w#~....6P#~.Dw..
-                        DB      $17,$23,$36,$00,$23,$36,$00,$2B,$2B,$18,$D1 ; $17CF
+;-------------------------------------------------------------------------------
+; $1766: Advance and program the active raster-interrupt schedule
+;-------------------------------------------------------------------------------
+; The interrupt stub has already written the current record's color-4 byte.
+; This routine writes the current record's colors 5-7, then uses its embedded
+; handler and motion-state words to arm the following record.
+;
+; A schedule cycle contains six records.  The $0C record selects
+; VIDEO_INTERRUPT_HANDLER for the following $18 boundary.  Every other
+; transition selects ALTERNATE_RASTER_INTERRUPT_HANDLER.  A $FF scanline ends
+; the schedule and returns the cursor to the selected base.
+ADVANCE_INTERRUPT_SCHEDULE:
+                        LD      HL,(INTERRUPT_SCHEDULE_CURSOR)
+                        INC     HL                      ; reserved
+                        INC     HL                      ; color 4, written by ISR
+                        INC     HL                      ; color 5
+                        LD      A,(HL)
+                        OUT     (PORT_COLOR_5),A
+                        INC     HL
+                        LD      A,(HL)
+                        OUT     (PORT_COLOR_6),A
+                        INC     HL
+                        LD      A,(HL)
+                        OUT     (PORT_COLOR_7),A
+
+; The handler word is also the IM 2 vector-table entry for the following
+; interrupt.  Port $0D supplies its low address byte; I supplies the high byte.
+                        INC     HL
+                        LD      A,L
+                        OUT     (PORT_INTERRUPT_VECTOR),A
+                        LD      A,H
+                        LD      I,A
+
+; Copy the motion-state pointer for the following record to RAM.  A null pointer
+; keeps that next interrupt line fixed.
+                        INC     HL
+                        INC     HL
+                        LD      A,(HL)
+                        LD      (INTERRUPT_MOTION_STATE_PTR),A
+                        INC     HL
+                        LD      A,(HL)
+                        LD      (INTERRUPT_MOTION_STATE_PTR+$01),A
+
+; Select the following record, wrapping at the $FF terminator.  Its scanline is
+; armed immediately and its color-4 value is parked in A' for the ISR prologue.
+                        INC     HL
+                        LD      A,(HL)
+                        CP      RASTER_SCHEDULE_END
+                        JR      NZ,raster_schedule_next_ready
+                        LD      HL,(INTERRUPT_SCHEDULE_BASE)
+raster_schedule_next_ready:
+                        LD      (INTERRUPT_SCHEDULE_CURSOR),HL
+                        LD      A,(HL)
+                        OUT     (PORT_INTERRUPT_LINE),A
+                        LD      (INTERRUPT_BASE_SCANLINE),A
+                        INC     HL
+                        INC     HL
+                        EX      AF,AF'
+                        LD      A,(HL)
+                        EX      AF,AF'
+
+; Four schedule transitions point at four-byte motion states initialized at
+; $C212.  They animate the following base lines $18, $30, $54 and $84.
+; Layout: phase timer, signed velocity, 8.8 displacement low/high.  The high
+; displacement byte is added to the record's base scanline before port $0F is
+; rewritten.  Each boundary reverses every $50 visits.
+                        LD      HL,(INTERRUPT_MOTION_STATE_PTR)
+                        LD      A,H
+                        OR      L
+                        RET     Z
+                        DEC     (HL)
+                        JR      Z,raster_motion_reverse
+raster_motion_tick:     INC     HL
+                        LD      A,(HL)                 ; signed velocity
+raster_motion_apply_velocity:
+                        INC     HL                     ; displacement low byte
+                        BIT     7,A
+                        JR      NZ,raster_motion_negative
+                        ADD     A,(HL)
+                        LD      (HL),A
+                        INC     HL
+                        LD      A,(HL)
+                        ADC     A,$00
+raster_motion_store_high:
+                        LD      (HL),A
+                        LD      A,(INTERRUPT_BASE_SCANLINE)
+                        ADD     A,(HL)
+                        OUT     (PORT_INTERRUPT_LINE),A
+                        RET
+
+; Sign-extend a negative eight-bit velocity into the high displacement byte.
+raster_motion_negative:
+                        ADD     A,(HL)
+                        LD      (HL),A
+                        INC     HL
+                        LD      A,(HL)
+                        ADC     A,$FF
+                        JR      raster_motion_store_high
+
+; Reverse velocity at the end of a motion phase.  Beginning the negative half
+; clears the displacement, so every boundary moves upward from its base and
+; returns to that base during the following positive half.
+raster_motion_reverse:  LD      (HL),RASTER_MOTION_PERIOD
+                        INC     HL
+                        LD      A,(HL)
+                        NEG
+                        LD      (HL),A
+                        JP      P,raster_motion_apply_velocity
+                        INC     HL
+                        LD      (HL),$00
+                        INC     HL
+                        LD      (HL),$00
+                        DEC     HL
+                        DEC     HL
+                        JR      raster_motion_apply_velocity
 
 ;-------------------------------------------------------------------------------
 ; $17DA: Advance a collided target or mine through its hit-animation frames
@@ -2716,24 +2990,95 @@ CLAMP_OBJECT_X_AND_FLAG_BOUNDARY:
                         LD      (IX+OBJECT_X_POSITION_LO),E
                         LD      (IX+OBJECT_X_POSITION_HI),D
                         RET
-                        DB      $84,$00,$DC,$77,$58,$00,$48 ; $19D8
-                        DB      $14,$00,$00,$D7,$00,$1C,$77,$58,$00,$48,$14,$00,$00,$0C,$00,$D8 ; $19DF  ......wX.H......
-                        DB      $77,$58,$00,$86,$13,$12,$C2,$18,$00,$D9,$77,$58,$00,$48,$14,$16 ; $19EF  wX........wX.H..
-                        DB      $C2,$30,$00,$DA,$77,$58,$00,$48,$14,$1A,$C2,$54,$00,$DB,$77,$58 ; $19FF  .0..wX.H...T..wX
-                        DB      $00,$48,$14,$1E,$C2,$FF,$FF,$84,$00,$00,$03,$07,$05,$48,$14,$00 ; $1A0F  .H...........H..
-                        DB      $00,$D7,$00,$01,$03,$07,$05,$48,$14,$00,$00,$0C,$00,$00,$03,$07 ; $1A1F  .......H........
-                        DB      $05,$86,$13,$12,$C2,$18,$00,$00,$03,$07,$05,$48,$14,$16,$C2,$30 ; $1A2F  ...........H...0
-                        DB      $00,$00,$03,$07,$05,$48,$14,$1A,$C2,$54,$00,$00,$03,$07,$05,$48 ; $1A3F  .....H...T.....H
-                        DB      $14,$1E,$C2,$FF,$3F,$0E,$EF,$10,$A2,$0F,$E0,$0F,$0A,$10,$28,$10 ; $1A4F  ....?.........(.
+
+;-------------------------------------------------------------------------------
+; $19D8: Raster schedule selected when DIP-switch bit 6 is set
+;-------------------------------------------------------------------------------
+; Each record is:
+;   DB scanline, reserved, color4, color5, color6, color7
+;   DW interrupt handler, optional raster-motion state
+;
+; The scanline order crosses the hardware counter wrap: $84, $D7, $0C, $18,
+; $30, $54.  The handler and motion words in each record configure the following
+; scanline.  The $0C record therefore selects the full frame service at $18.
+; Records $0C, $18, $30 and $54 animate bases $18, $30, $54 and $84.
+INTERRUPT_SCHEDULE_SET_A:
+interrupt_schedule_a_84:
+                        DB      $84,$00,$DC,$77,$58,$00
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
+interrupt_schedule_a_d7:
+                        DB      $D7,$00,$1C,$77,$58,$00
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
+interrupt_schedule_a_0c:
+                        DB      $0C,$00,$D8,$77,$58,$00
+                        DW      VIDEO_INTERRUPT_HANDLER,RASTER_MOTION_STATE_0 ; next: $18
+interrupt_schedule_a_18:
+                        DB      $18,$00,$D9,$77,$58,$00
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_1 ; next: $30
+interrupt_schedule_a_30:
+                        DB      $30,$00,$DA,$77,$58,$00
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_2 ; next: $54
+interrupt_schedule_a_54:
+                        DB      $54,$00,$DB,$77,$58,$00
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_3 ; next: $84
+                        DB      RASTER_SCHEDULE_END,$FF   ; second byte is table padding
+
+;-------------------------------------------------------------------------------
+; $1A16: Raster schedule selected when DIP-switch bit 6 is clear
+;-------------------------------------------------------------------------------
+INTERRUPT_SCHEDULE_SET_B:
+interrupt_schedule_b_84:
+                        DB      $84,$00,$00,$03,$07,$05
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
+interrupt_schedule_b_d7:
+                        DB      $D7,$00,$01,$03,$07,$05
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
+interrupt_schedule_b_0c:
+                        DB      $0C,$00,$00,$03,$07,$05
+                        DW      VIDEO_INTERRUPT_HANDLER,RASTER_MOTION_STATE_0 ; next: $18
+interrupt_schedule_b_18:
+                        DB      $18,$00,$00,$03,$07,$05
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_1 ; next: $30
+interrupt_schedule_b_30:
+                        DB      $30,$00,$00,$03,$07,$05
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_2 ; next: $54
+interrupt_schedule_b_54:
+                        DB      $54,$00,$00,$03,$07,$05
+                        DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_3 ; next: $84
+                        DB      RASTER_SCHEDULE_END
+
+;-------------------------------------------------------------------------------
+; $1A53: Per-type lists of object bitmap and animation-frame pointers
+;-------------------------------------------------------------------------------
+OBJECT_BITMAP_POINTER_LISTS:
+                        DB      $3F,$0E,$EF,$10,$A2,$0F,$E0,$0F,$0A,$10,$28,$10             ; $1A53
                         DB      $3A,$10,$00,$00,$7D,$0E,$C1,$10,$5E,$10,$72,$10,$80,$10,$8A,$10 ; $1A5F  :...}...^.r.....
                         DB      $00,$00,$AB,$0E,$EF,$10,$A2,$0F,$E0,$0F,$0A,$10,$28,$10,$3A,$10 ; $1A6F  ............(.:.
                         DB      $00,$00,$DF,$0E,$C1,$10,$5E,$10,$72,$10,$80,$10,$8A,$10,$00,$00 ; $1A7F  ......^.r.......
                         DB      $09,$0F,$C1,$10,$5E,$10,$72,$10,$80,$10,$8A,$10,$00,$00,$2F,$0F ; $1A8F  ....^.r......./.
                         DB      $B0,$10,$80,$10,$8A,$10,$00,$00,$40,$0F,$66,$0F,$88,$0F,$B0,$10 ; $1A9F  ........ .f.....
                         DB      $80,$10,$8A,$10,$00,$00,$7B,$11,$8D,$11,$00,$00,$2D,$11,$47,$11 ; $1AAF  ......{.....-.G.
-                        DB      $62,$11,$00,$00,$53,$1A,$63,$1A,$71,$1A,$81,$1A,$8F,$1A,$9D,$1A ; $1ABF  b...S.c.q.......
-                        DB      $B5,$1A,$BB,$1A,$A7,$1A,$82,$C8,$C0,$64,$96,$C0,$4C,$64,$C0,$33 ; $1ACF  .........d..Ld.3
-                        DB      $32,$C0,$1A,$00,$C0,$78,$46,$00                                 ; $1ADF  2....xF.
+                        DB      $62,$11,$00,$00                                             ; $1ABF
+
+;-------------------------------------------------------------------------------
+; $1AC3: Object type to bitmap-pointer-list table
+;-------------------------------------------------------------------------------
+OBJECT_BITMAP_SET_TABLE:
+                        DB      $53,$1A,$63,$1A,$71,$1A,$81,$1A,$8F,$1A,$9D,$1A             ; $1AC3
+                        DB      $B5,$1A,$BB,$1A,$A7,$1A                                     ; $1ACF
+
+;-------------------------------------------------------------------------------
+; $1AD5: Torpedo Y thresholds and two-record collision-lane bases
+;-------------------------------------------------------------------------------
+TORPEDO_COLLISION_LANE_TABLE:
+                        DB      $82,$C8,$C0,$64,$96,$C0,$4C,$64,$C0,$33                     ; $1AD5
+                        DB      $32,$C0,$1A,$00,$C0                                         ; $1ADF
+
+;-------------------------------------------------------------------------------
+; $1AE4: Torpedo perspective-frame Y thresholds
+;-------------------------------------------------------------------------------
+TORPEDO_FRAME_Y_TABLE:
+                        DB      $78,$46,$00                                                 ; $1AE4
 
 TEXT_CONGRATULATIONS_EN:
                         DB      $43,$4F,$4E,$47,$52,$41,$54,$55,$4C,$41,$54,$49,$4F,$4E,$53,$00 ; $1AE7  CONGRATULATIONS
@@ -2941,7 +3286,11 @@ ROM_TAIL_PADDING:
                         DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $1FC4  ................
                         DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $1FD4  ................
                         DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $1FE4  ................
-                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$1C                 ; $1FF4  ............
+                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF                 ; $1FF4
+
+; $1FFF balances the additive checksum of ROM block $1800-$1FFF to $FF.
+ROM_BLOCK_CHECKSUM_ADJUSTMENT:
+                        DB      $1C                                                     ; $1FFF
 
 ROM_END:
                         END

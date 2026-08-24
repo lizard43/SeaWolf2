@@ -18,14 +18,21 @@ not describe that structure correctly.
   executing the locally assembled ROM set.
 - The reset path, native TERSE kernel, initial thread at `$02F0`, and control
   thread at `$0544` are reconstructed as assembly.
-- Power-on diagnostics are instruction-aligned and documented.
+- Power-on diagnostics are reconstructed as native Z80 and documented.
 - Character fonts, title and status strings, and the English, German, and
   French prompt tables are identified.
+- The 25-byte object-record ABI, all three scheduler pools, object selection,
+  fixed-point movement, rendering, and the target/torpedo/mine handlers are
+  reconstructed as native Z80.
+- Both six-entry raster schedules, their IM 2 vector selection, the primary and
+  alternate interrupt handlers, and the four moving split-line states are fully
+  decoded.
 - The frame interrupt's discrete-sound output, timer decay, torpedo producers,
   collision producers, sonar sequence, dive effect, and coin-counter pulse are
   labeled and documented.
-- Remaining mixed or unclassified regions are retained as byte-exact `DB`
-  blocks. They can be replaced incrementally without losing the working build.
+- The remaining `DB` regions are inventoried by address and type. They contain
+  1,611 bytes of native Z80 awaiting promotion, 22 bytes of TERSE, verified
+  tables and graphics, ROM fill, and one uncertain byte at `$1385`.
 
 ## ROM organization
 
@@ -40,6 +47,97 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
+
+## TERSE
+
+Sea Wolf II uses a direct-threaded TERSE engine. Threaded programs contain
+little-endian execution addresses and inline operands. Native Z80 routines can
+serve as TERSE words when they finish with `JP (IY)`.
+
+### Engine state
+
+| Register/address | Function |
+| --- | --- |
+| `BC` | Threaded instruction pointer |
+| `SP`, initialized to `$C3E2` | Downward-growing data stack |
+| `IX`, initialized to `$C400` | Downward-growing return/control stack |
+| `IY`, initialized to `$0043` | Address of `TERSE_DISPATCH` |
+| `RST $08` | Enter an inline threaded program through `TERSE_ENTER` |
+
+`TERSE_ENTER` saves the caller's current `BC` on the IX stack and uses the Z80
+return address following `RST $08` as the new threaded instruction pointer.
+`TERSE_DISPATCH` fetches a 16-bit address through `BC` and jumps to it.
+`TERSE_RETURN` restores the prior threaded instruction pointer from IX.
+
+### Recovered words
+
+| Address | Source label | Operation |
+| ---: | --- | --- |
+| `$0039` | `TERSE_RETURN` | Return from the current threaded program |
+| `$004A` | `TERSE_INLINE_BFETCH` | Fetch a byte through the following inline address |
+| `$0052` | `TERSE_BFETCH` | `( address -- byte )` |
+| `$0059` | `TERSE_BSTORE` | `( value address -- )`, storing the low byte |
+| `$005E` | `TERSE_BEGIN` | Save the current threaded cell on the IX control stack |
+| `$006E` | `TERSE_UNTIL` | `( flag -- )`, repeat at `BEGIN` while zero |
+| `$0081` | `TERSE_TRUE` | Push `$FFFF` |
+| `$0087` | `TERSE_LIT` | Push the following inline 16-bit value |
+| `$0090` | `TERSE_BYTE_NOT` | Complement the low byte of the top stack value |
+| `$0097` | `TERSE_ZERO_BRANCH` | `( flag -- )`, branch to the inline address when zero |
+| `$00A8` | `TERSE_BRANCH` | Unconditional branch to the inline address |
+
+The initial thread at `$02F0` controls startup and the outer game loop. The
+native entry at `$0544` enters the structured control thread at `$0545`, which
+coordinates game state, object creation, hit processing, sonar, firing, and
+coin handling. The 22-byte stream at `$036F-$0384` is the remaining raw TERSE
+program.
+
+## Raster interrupt scheduler
+
+Machine initialization selects one of two schedules through DIP-switch port
+`$13`, bit 6. Each schedule contains six 10-byte records:
+
+```text
+scanline, reserved, color4, color5, color6, color7,
+IM2 handler word for the next record, motion-state word for the next record
+```
+
+The scanlines execute in this order. The handler and motion state are selected
+by the preceding record:
+
+| Base scanline | Handler | Motion state |
+| ---: | --- | ---: |
+| `$84` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C21E` |
+| `$D7` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | none |
+| `$0C` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | none |
+| `$18` | `VIDEO_INTERRUPT_HANDLER` | `$C212` |
+| `$30` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C216` |
+| `$54` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C21A` |
+
+The `$0C` record selects `VIDEO_INTERRUPT_HANDLER` for the following `$18`
+boundary. That `$18` interrupt runs the complete frame service: sound output,
+object-pool updates, timer decay, game-time maintenance, and coin-input
+handling. The other five interrupts only advance palette, vector, line, and
+split-motion state. After advancing the schedule, the frame handler re-enables
+interrupts so the lightweight raster handlers can nest while the frame workload
+continues.
+
+`ADVANCE_INTERRUPT_SCHEDULE` writes color registers 5-7, selects the next IM 2
+handler through the record's embedded vector word, arms the following scanline,
+and preloads its color-4 value into `A'`. Both interrupt entries execute a
+90-T-state calibrated delay before writing color register 4.
+
+The two schedules use different palette values:
+
+| Schedule | Color 4 sequence | Constant colors 5/6/7 |
+| --- | --- | --- |
+| `$19D8` | `$DC,$1C,$D8,$D9,$DA,$DB` | `$77,$58,$00` |
+| `$1A16` | `$00,$01,$00,$00,$00,$00` | `$03,$07,$05` |
+
+Each four-byte motion state contains a phase timer, signed velocity, and 8.8
+scanline displacement. Initial phase/velocity pairs are `$04/$04`, `$18/$08`,
+`$2C/$10`, and `$40/$20` for base lines `$18`, `$30`, `$54`, and `$84`.
+Each velocity reverses after `$50` visits. The signed high displacement byte is
+added to the next record's base scanline before port `$0F` is rewritten.
 
 ## Discrete-sound control
 
