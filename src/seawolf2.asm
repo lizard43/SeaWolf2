@@ -7,9 +7,22 @@
 ;
 ;===============================================================================
 
+PORT_COLOR_0            EQU     $00
+PORT_COLOR_1            EQU     $01
+PORT_COLOR_2            EQU     $02
+PORT_COLOR_3            EQU     $03
+PORT_COLOR_4            EQU     $04
+PORT_COLOR_5            EQU     $05
+PORT_COLOR_6            EQU     $06
+PORT_COLOR_7            EQU     $07
 PORT_VIDEO_MODE         EQU     $08
 PORT_COLOR_SPLIT        EQU     $09
 PORT_VBLANK_LINE        EQU     $0A
+PORT_COLOR_BLOCK        EQU     $0B
+PORT_MAGIC_CONTROL      EQU     $0C
+PORT_INTERRUPT_VECTOR   EQU     $0D
+PORT_INTERRUPT_ENABLE   EQU     $0E
+PORT_INTERRUPT_LINE     EQU     $0F
 PORT_P2_HANDLE          EQU     $10
 PORT_P1_HANDLE          EQU     $11
 PORT_COIN_START         EQU     $12
@@ -22,6 +35,31 @@ PORT_RIGHT_LAMPS        EQU     $43
 RAM_BASE                EQU     $C000
 TERSE_DATA_STACK        EQU     $C3E2
 TERSE_RETURN_STACK      EQU     $C400
+
+VIDEO_RAM_BASE          EQU     $4000
+VIDEO_RAM_LIMIT         EQU     $8000
+WORK_RAM_LIMIT          EQU     $C400
+
+; Native text renderer state used by the power-on and interactive diagnostics.
+TEXT_X_POSITION_LO      EQU     $C1FE
+TEXT_X_POSITION_HI      EQU     $C1FF
+TEXT_Y_POSITION         EQU     $C201
+TEXT_COLOR              EQU     $C202
+
+SELF_TEST_TEXT_BUFFER   EQU     $C000
+SELF_TEST_ROM_BLOCK_SIZE EQU    $0800
+
+GAME_TIME_BCD           EQU     $C1DB
+LEFT_STATION_DISABLED   EQU     $C1E4
+ACTIVE_PLAYER_COUNT     EQU     $C1FB
+
+; SELF_TEST_PARAMETER_SET_* layout.  The first two bytes form an executable
+; JR instruction.  A successful range test jumps through IY and executes that
+; JR, selecting the next diagnostic phase without a separate return address.
+SELF_TEST_RANGE_LOWER_PAGE EQU  $02
+SELF_TEST_RANGE_UPPER_PAGE EQU  $03
+SELF_TEST_RANGE_START_LO   EQU  $04
+SELF_TEST_RANGE_START_HI   EQU  $05
 
 ; Object/entity record ABI.  All three scheduler pools use this exact $19-byte
 ; layout.  Vertical motion is accelerated fixed-point; horizontal motion uses
@@ -287,309 +325,374 @@ SELF_TEST_PATTERN_TABLE:
 ; $00E8: Service-mode diagnostics and hardware verification
 ;-------------------------------------------------------------------------------
 POWER_ON_SELF_TEST:
-                        DB      $F3                     ; $00E8  DI
-                        DB      $AF                     ; $00E9  XOR A
-                        DB      $D3,$04                 ; $00EA  OUT ($04),A
-                        DB      $D3,$0E                 ; $00EC  OUT ($0E),A
-                        DB      $3E,$EA                 ; $00EE  LD A,$EA
-                        DB      $D3,$09                 ; $00F0  OUT ($09),A
-                        DB      $3E,$C8                 ; $00F2  LD A,$C8
-                        DB      $D3,$0A                 ; $00F4  OUT ($0A),A
-                        DB      $3E,$07                 ; $00F6  LD A,$07
-                        DB      $D3,$07                 ; $00F8  OUT ($07),A
-                        DB      $DB,$12                 ; $00FA  IN A,($12)
-                        DB      $E6,$06                 ; $00FC  AND $06
-                        DB      $C2,$69,$01             ; $00FE  JP NZ,$0169
-                        DB      $21,$00,$40             ; $0101  LD HL,$4000
-                        DB      $11,$00,$40             ; $0104  LD DE,$4000
-                        DB      $36,$00                 ; $0107  LD (HL),$00
-                        DB      $23                     ; $0109  INC HL
-                        DB      $DB,$10                 ; $010A  IN A,($10)
-                        DB      $1D                     ; $010C  DEC E
-                        DB      $20,$F8                 ; $010D  JR NZ,$0107
-                        DB      $15                     ; $010F  DEC D
-                        DB      $20,$F5                 ; $0110  JR NZ,$0107
-                        DB      $3E,$0C                 ; $0112  LD A,$0C
-                        DB      $32,$02,$C2             ; $0114  LD ($C202),A
-                        DB      $3E,$32                 ; $0117  LD A,$32
-                        DB      $32,$FF,$C1             ; $0119  LD ($C1FF),A
-                        DB      $32,$01,$C2             ; $011C  LD ($C201),A
-                        DB      $01,$00,$08             ; $011F  LD BC,$0800
-                        DB      $21,$00,$00             ; $0122  LD HL,$0000
-                        DB      $AF                     ; $0125  XOR A
-                        DB      $86                     ; $0126  ADD A, (HL)
-                        DB      $57                     ; $0127  LD D,A
-                        DB      $DB,$10                 ; $0128  IN A,($10)
-                        DB      $7A                     ; $012A  LD A,D
-                        DB      $23                     ; $012B  INC HL
-                        DB      $0D                     ; $012C  DEC C
-                        DB      $20,$F7                 ; $012D  JR NZ,$0126
-                        DB      $10,$F5                 ; $012F  DJNZ $0126
-                        DB      $7A                     ; $0131  LD A,D
-                        DB      $FE,$FF                 ; $0132  CP $FF
-                        DB      $20,$15                 ; $0134  JR NZ,$014B
-                        DB      $01,$00,$08             ; $0136  LD BC,$0800
-                        DB      $DB,$10                 ; $0139  IN A,($10)
-                        DB      $7C                     ; $013B  LD A,H
-                        DB      $FE,$20                 ; $013C  CP $20
-                        DB      $20,$E5                 ; $013E  JR NZ,$0125
-                        DB      $3A,$FF,$C1             ; $0140  LD A,($C1FF)
-                        DB      $FE,$32                 ; $0143  CP $32
-                        DB      $28,$27                 ; $0145  JR Z,$016E
-                        DB      $DB,$10                 ; $0147  IN A,($10)
-                        DB      $18,$FC                 ; $0149  JR $0147
-                        DB      $7C                     ; $014B  LD A,H
-                        DB      $E5                     ; $014C  PUSH HL
-                        DB      $D5                     ; $014D  PUSH DE
-                        DB      $C5                     ; $014E  PUSH BC
-                        DB      $0F                     ; $014F  RRCA
-                        DB      $0F                     ; $0150  RRCA
-                        DB      $0F                     ; $0151  RRCA
-                        DB      $E6,$07                 ; $0152  AND $07
-                        DB      $C6,$40                 ; $0154  ADD A, $40
-                        DB      $21,$00,$C0             ; $0156  LD HL,$C000
-                        DB      $77                     ; $0159  LD (HL),A
-                        DB      $23                     ; $015A  INC HL
-                        DB      $36,$00                 ; $015B  LD (HL),$00
-                        DB      $2B                     ; $015D  DEC HL
-                        DB      $CD,$E4,$15             ; $015E  CALL $15E4
-                        DB      $F3                     ; $0161  DI
-                        DB      $DB,$10                 ; $0162  IN A,($10)
-                        DB      $C1                     ; $0164  POP BC
-                        DB      $D1                     ; $0165  POP DE
-                        DB      $E1                     ; $0166  POP HL
-                        DB      $18,$CD                 ; $0167  JR $0136
-                        DB      $FE,$02                 ; $0169  CP $02
-                        DB      $C2,$64,$02             ; $016B  JP NZ,$0264
-                        DB      $F3                     ; $016E  DI
-                        DB      $3E,$14                 ; $016F  LD A,$14
-                        DB      $D3,$09                 ; $0171  OUT ($09),A
-                        DB      $06,$08                 ; $0173  LD B,$08
-                        DB      $21,$B0,$00             ; $0175  LD HL,$00B0
-                        DB      $0E,$0B                 ; $0178  LD C,$0B
-                        DB      $ED,$B3                 ; $017A  OTIR
-                        DB      $FD,$21,$82,$01         ; $017C  LD IY,$0182
-                        DB      $18,$1E                 ; $0180  JR $01A0
+; With the service DIP active, reset enters here instead of the TERSE game
+; thread.  No start button runs the ROM checksum before the destructive memory
+; tests.  Holding START 1 skips directly to memory; START 2 selects the input
+; display; holding both start buttons selects the convergence grid.
+                        DI
+                        XOR     A
+                        OUT     (PORT_COLOR_4),A
+                        OUT     (PORT_INTERRUPT_ENABLE),A
+                        LD      A,$EA
+                        OUT     (PORT_COLOR_SPLIT),A
+                        LD      A,$C8
+                        OUT     (PORT_VBLANK_LINE),A
+                        LD      A,$07
+                        OUT     (PORT_COLOR_7),A
+                        IN      A,(PORT_COIN_START)
+                        AND     $06
+                        JP      NZ,SELF_TEST_BUTTON_SELECT
+
+; Clear all $4000 bytes of screen RAM before reporting any ROM failure.
+                        LD      HL,VIDEO_RAM_BASE
+                        LD      DE,$4000
+self_test_clear_video:  LD      (HL),$00
+                        INC     HL
+                        IN      A,(PORT_P2_HANDLE)
+                        DEC     E
+                        JR      NZ,self_test_clear_video
+                        DEC     D
+                        JR      NZ,self_test_clear_video
+
+; Each of the four $0800-byte program ROMs has additive checksum $FF.  HL is
+; deliberately allowed to advance across block boundaries; H therefore also
+; identifies the block when a checksum fails.
+                        LD      A,$0C
+                        LD      (TEXT_COLOR),A
+                        LD      A,$32
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      (TEXT_Y_POSITION),A
+                        LD      BC,SELF_TEST_ROM_BLOCK_SIZE
+                        LD      HL,$0000
+self_test_checksum_rom: XOR     A
+self_test_sum_rom_byte: ADD     A,(HL)
+                        LD      D,A
+                        IN      A,(PORT_P2_HANDLE)
+                        LD      A,D
+                        INC     HL
+                        DEC     C
+                        JR      NZ,self_test_sum_rom_byte
+                        DJNZ    self_test_sum_rom_byte
+                        LD      A,D
+                        CP      $FF
+                        JR      NZ,self_test_report_rom_failure
+self_test_next_rom:     LD      BC,SELF_TEST_ROM_BLOCK_SIZE
+                        IN      A,(PORT_P2_HANDLE)
+                        LD      A,H
+                        CP      $20
+                        JR      NZ,self_test_checksum_rom
+
+; The renderer's X-position byte doubles as a work-RAM sentinel during the ROM
+; pass.  Corruption stops the test before destructive RAM verification begins.
+                        LD      A,(TEXT_X_POSITION_HI)
+                        CP      $32
+                        JR      Z,SELF_TEST_MEMORY_DIAGNOSTICS
+self_test_ram_failure:  IN      A,(PORT_P2_HANDLE)
+                        JR      self_test_ram_failure
+
+; Render the failed ROM block identifier, then continue so every program ROM
+; is checked in one pass.  Character codes $41-$44 identify the four blocks.
+self_test_report_rom_failure:
+                        LD      A,H
+                        PUSH    HL
+                        PUSH    DE
+                        PUSH    BC
+                        RRCA
+                        RRCA
+                        RRCA
+                        AND     $07
+                        ADD     A,$40
+                        LD      HL,SELF_TEST_TEXT_BUFFER
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),$00
+                        DEC     HL
+                        CALL    DRAW_TEXT
+                        DI
+                        IN      A,(PORT_P2_HANDLE)
+                        POP     BC
+                        POP     DE
+                        POP     HL
+                        JR      self_test_next_rom
+
+SELF_TEST_BUTTON_SELECT:
+                        CP      $02
+                        JP      NZ,SELF_TEST_MODE_SELECT
 
 ;-------------------------------------------------------------------------------
-; $0182: Six-byte diagnostic parameter block
+; $016E: Destructive video/work-RAM verification setup
+;-------------------------------------------------------------------------------
+SELF_TEST_MEMORY_DIAGNOSTICS:
+                        DI
+                        LD      A,$14
+                        OUT     (PORT_COLOR_SPLIT),A
+                        LD      B,$08
+                        LD      HL,SELF_TEST_PATTERN_TABLE
+                        LD      C,PORT_COLOR_BLOCK
+                        OTIR
+                        LD      IY,SELF_TEST_PARAMETER_SET_1
+                        JR      SELF_TEST_VIDEO_VERIFY
+
+;-------------------------------------------------------------------------------
+; $0182: Video-RAM range descriptor and successful-pass continuation
 ;-------------------------------------------------------------------------------
 SELF_TEST_PARAMETER_SET_1:
-                        DB      $18,$04,$3F,$80,$00,$40                                         ; $0182  ..?..
+                        JR      SELF_TEST_SECOND_PASS
+                        DB      $3F                    ; page preceding tested range
+                        DB      $80                    ; exclusive upper page
+                        DW      VIDEO_RAM_BASE         ; first byte tested
 
 ;-------------------------------------------------------------------------------
-; $0188: Second diagnostic setup path
+; $0188: Load the second palette and test the $C000-$C3FF work RAM
 ;-------------------------------------------------------------------------------
 SELF_TEST_SECOND_PASS:
-                        DB      $06,$08                 ; $0188  LD B,$08
-                        DB      $21,$B8,$00             ; $018A  LD HL,$00B8
-                        DB      $0E,$0B                 ; $018D  LD C,$0B
-                        DB      $ED,$B3                 ; $018F  OTIR
-                        DB      $FD,$21,$97,$01         ; $0191  LD IY,$0197
-                        DB      $18,$09                 ; $0195  JR $01A0
+                        LD      B,$08
+                        LD      HL,SELF_TEST_PATTERN_TABLE+$08
+                        LD      C,PORT_COLOR_BLOCK
+                        OTIR
+                        LD      IY,SELF_TEST_PARAMETER_SET_2
+                        JR      SELF_TEST_VIDEO_VERIFY
 
 ;-------------------------------------------------------------------------------
-; $0197: Six-byte diagnostic parameter block
+; $0197: Work-RAM range descriptor and successful-pass continuation
 ;-------------------------------------------------------------------------------
 SELF_TEST_PARAMETER_SET_2:
-                        DB      $18,$04,$BF,$C4,$00,$C0                                         ; $0197  ......
+                        JR      SELF_TEST_RESTART
+                        DB      $BF                    ; page preceding tested range
+                        DB      $C4                    ; exclusive upper page
+                        DW      RAM_BASE               ; first byte tested
 
 ;-------------------------------------------------------------------------------
-; $019D: Return from diagnostic setup to warm start
+; $019D: Both memory ranges passed; restart through normal initialization
 ;-------------------------------------------------------------------------------
 SELF_TEST_RESTART:
-                        DB      $C3,$16,$00             ; $019D  JP $0016
+                        JP      WARM_START
 
 ;-------------------------------------------------------------------------------
-; $01A0: Video-memory verification loop
+; $01A0: Destructive walking-bit memory verification
 ;-------------------------------------------------------------------------------
 SELF_TEST_VIDEO_VERIFY:
-                        DB      $0E,$00                 ; $01A0  LD C,$00
-                        DB      $06,$01                 ; $01A2  LD B,$01
-                        DB      $FD,$66,$05             ; $01A4  LD H,(IY+$05)
-                        DB      $FD,$6E,$04             ; $01A7  LD L,(IY+$04)
-                        DB      $70                     ; $01AA  LD (HL),B
-                        DB      $7E                     ; $01AB  LD A,(HL)
-                        DB      $A8                     ; $01AC  XOR B
-                        DB      $28,$07                 ; $01AD  JR Z,$01B6
-                        DB      $DD,$21,$B6,$01         ; $01AF  LD IX,$01B6
-                        DB      $C3,$60,$02             ; $01B3  JP $0260
-                        DB      $23                     ; $01B6  INC HL
-                        DB      $7C                     ; $01B7  LD A,H
-                        DB      $FD,$BE,$03             ; $01B8  CP (IY+$03)
-                        DB      $DB,$10                 ; $01BB  IN A,($10)
-                        DB      $20,$EB                 ; $01BD  JR NZ,$01AA
-                        DB      $2B                     ; $01BF  DEC HL
-                        DB      $DB,$10                 ; $01C0  IN A,($10)
-                        DB      $7C                     ; $01C2  LD A,H
-                        DB      $FD,$BE,$02             ; $01C3  CP (IY+$02)
-                        DB      $28,$18                 ; $01C6  JR Z,$01E0
-                        DB      $7E                     ; $01C8  LD A,(HL)
-                        DB      $A8                     ; $01C9  XOR B
-                        DB      $28,$07                 ; $01CA  JR Z,$01D3
-                        DB      $DD,$21,$D3,$01         ; $01CC  LD IX,$01D3
-                        DB      $C3,$60,$02             ; $01D0  JP $0260
-                        DB      $78                     ; $01D3  LD A,B
-                        DB      $2F                     ; $01D4  CPL
-                        DB      $77                     ; $01D5  LD (HL),A
-                        DB      $AE                     ; $01D6  XOR (HL)
-                        DB      $28,$E6                 ; $01D7  JR Z,$01BF
-                        DB      $DD,$21,$BF,$01         ; $01D9  LD IX,$01BF
-                        DB      $C3,$60,$02             ; $01DD  JP $0260
-                        DB      $23                     ; $01E0  INC HL
-                        DB      $DB,$10                 ; $01E1  IN A,($10)
-                        DB      $7C                     ; $01E3  LD A,H
-                        DB      $FD,$BE,$03             ; $01E4  CP (IY+$03)
-                        DB      $28,$0F                 ; $01E7  JR Z,$01F8
-                        DB      $78                     ; $01E9  LD A,B
-                        DB      $2F                     ; $01EA  CPL
-                        DB      $AE                     ; $01EB  XOR (HL)
-                        DB      $28,$06                 ; $01EC  JR Z,$01F4
-                        DB      $DD,$21,$F4,$01         ; $01EE  LD IX,$01F4
-                        DB      $18,$6C                 ; $01F2  JR $0260
-                        DB      $AF                     ; $01F4  XOR A
-                        DB      $77                     ; $01F5  LD (HL),A
-                        DB      $18,$E8                 ; $01F6  JR $01E0
-                        DB      $CB,$20                 ; $01F8  SLA B
-                        DB      $30,$A8                 ; $01FA  JR NC,$01A4
-                        DB      $79                     ; $01FC  LD A,C
-                        DB      $A7                     ; $01FD  AND A
-                        DB      $20,$02                 ; $01FE  JR NZ,$0202
-                        DB      $FD,$E9                 ; $0200  JP (IY)
-                        DB      $D9                     ; $0202  EXX
-                        DB      $DB,$10                 ; $0203  IN A,($10)
-                        DB      $11,$00,$40             ; $0205  LD DE,$4000
-                        DB      $21,$C0,$00             ; $0208  LD HL,$00C0
-                        DB      $01,$28,$00             ; $020B  LD BC,$0028
-                        DB      $ED,$B0                 ; $020E  LDIR
-                        DB      $01,$28,$00             ; $0210  LD BC,$0028
-                        DB      $21,$C0,$00             ; $0213  LD HL,$00C0
-                        DB      $ED,$B0                 ; $0216  LDIR
-                        DB      $21,$00,$40             ; $0218  LD HL,$4000
-                        DB      $01,$B0,$40             ; $021B  LD BC,$40B0
-                        DB      $7E                     ; $021E  LD A,(HL)
-                        DB      $12                     ; $021F  LD (DE),A
-                        DB      $DB,$10                 ; $0220  IN A,($10)
-                        DB      $23                     ; $0222  INC HL
-                        DB      $13                     ; $0223  INC DE
-                        DB      $0D                     ; $0224  DEC C
-                        DB      $20,$F7                 ; $0225  JR NZ,$021E
-                        DB      $10,$F5                 ; $0227  DJNZ $021E
-                        DB      $D9                     ; $0229  EXX
-                        DB      $3E,$47                 ; $022A  LD A,$47
-                        DB      $CB,$41                 ; $022C  BIT 0,C
-                        DB      $28,$02                 ; $022E  JR Z,$0232
-                        DB      $D3,$03                 ; $0230  OUT ($03),A
-                        DB      $CB,$49                 ; $0232  BIT 1,C
-                        DB      $28,$02                 ; $0234  JR Z,$0238
-                        DB      $D3,$02                 ; $0236  OUT ($02),A
-                        DB      $CB,$51                 ; $0238  BIT 2,C
-                        DB      $28,$02                 ; $023A  JR Z,$023E
-                        DB      $D3,$01                 ; $023C  OUT ($01),A
-                        DB      $CB,$59                 ; $023E  BIT 3,C
-                        DB      $28,$02                 ; $0240  JR Z,$0244
-                        DB      $D3,$00                 ; $0242  OUT ($00),A
-                        DB      $CB,$61                 ; $0244  BIT 4,C
-                        DB      $28,$02                 ; $0246  JR Z,$024A
-                        DB      $D3,$07                 ; $0248  OUT ($07),A
-                        DB      $CB,$69                 ; $024A  BIT 5,C
-                        DB      $28,$02                 ; $024C  JR Z,$0250
-                        DB      $D3,$06                 ; $024E  OUT ($06),A
-                        DB      $CB,$71                 ; $0250  BIT 6,C
-                        DB      $28,$02                 ; $0252  JR Z,$0256
-                        DB      $D3,$05                 ; $0254  OUT ($05),A
-                        DB      $CB,$79                 ; $0256  BIT 7,C
-                        DB      $28,$02                 ; $0258  JR Z,$025C
-                        DB      $D3,$04                 ; $025A  OUT ($04),A
-                        DB      $DB,$10                 ; $025C  IN A,($10)
-                        DB      $18,$FC                 ; $025E  JR $025C
-                        DB      $B1                     ; $0260  OR C
-                        DB      $4F                     ; $0261  LD C,A
-                        DB      $DD,$E9                 ; $0262  JP (IX)
+; C accumulates every failing data bit.  B walks $01,$02,...,$80.  Each bit
+; receives three checks: write/read while ascending, read/replace with the
+; complement while descending, then complement/read/clear while ascending.
+                        LD      C,$00
+                        LD      B,$01
+self_test_begin_bit:    LD      H,(IY+SELF_TEST_RANGE_START_HI)
+                        LD      L,(IY+SELF_TEST_RANGE_START_LO)
+self_test_write_bit:    LD      (HL),B
+                        LD      A,(HL)
+                        XOR     B
+                        JR      Z,self_test_advance_write
+                        LD      IX,self_test_advance_write
+                        JP      SELF_TEST_ACCUMULATE_FAILURE
+self_test_advance_write:
+                        INC     HL
+                        LD      A,H
+                        CP      (IY+SELF_TEST_RANGE_UPPER_PAGE)
+                        IN      A,(PORT_P2_HANDLE)
+                        JR      NZ,self_test_write_bit
+
+self_test_reverse_scan: DEC     HL
+                        IN      A,(PORT_P2_HANDLE)
+                        LD      A,H
+                        CP      (IY+SELF_TEST_RANGE_LOWER_PAGE)
+                        JR      Z,self_test_forward_complement_scan
+                        LD      A,(HL)
+                        XOR     B
+                        JR      Z,self_test_write_complement
+                        LD      IX,self_test_write_complement
+                        JP      SELF_TEST_ACCUMULATE_FAILURE
+self_test_write_complement:
+                        LD      A,B
+                        CPL
+                        LD      (HL),A
+                        XOR     (HL)
+                        JR      Z,self_test_reverse_scan
+                        LD      IX,self_test_reverse_scan
+                        JP      SELF_TEST_ACCUMULATE_FAILURE
+
+self_test_forward_complement_scan:
+                        INC     HL
+                        IN      A,(PORT_P2_HANDLE)
+                        LD      A,H
+                        CP      (IY+SELF_TEST_RANGE_UPPER_PAGE)
+                        JR      Z,self_test_next_bit
+                        LD      A,B
+                        CPL
+                        XOR     (HL)
+                        JR      Z,self_test_clear_test_byte
+                        LD      IX,self_test_clear_test_byte
+                        JR      SELF_TEST_ACCUMULATE_FAILURE
+self_test_clear_test_byte:
+                        XOR     A
+                        LD      (HL),A
+                        JR      self_test_forward_complement_scan
+
+self_test_next_bit:     SLA     B
+                        JR      NC,self_test_begin_bit
+                        LD      A,C
+                        AND     A
+                        JR      NZ,SELF_TEST_DISPLAY_MEMORY_FAILURE
+                        JP      (IY)
+; Preserve the live test registers in the primary set while the shadow set
+; builds a full-screen failure pattern.  The accumulated bits in C then select
+; palette registers, identifying every data line that failed.
+SELF_TEST_DISPLAY_MEMORY_FAILURE:
+                        EXX
+                        IN      A,(PORT_P2_HANDLE)
+                        LD      DE,VIDEO_RAM_BASE
+                        LD      HL,SELF_TEST_PATTERN_TABLE+$10
+                        LD      BC,$0028
+                        LDIR
+                        LD      BC,$0028
+                        LD      HL,SELF_TEST_PATTERN_TABLE+$10
+                        LDIR
+                        LD      HL,VIDEO_RAM_BASE
+                        LD      BC,$40B0
+self_test_expand_failure_pattern:
+                        LD      A,(HL)
+                        LD      (DE),A
+                        IN      A,(PORT_P2_HANDLE)
+                        INC     HL
+                        INC     DE
+                        DEC     C
+                        JR      NZ,self_test_expand_failure_pattern
+                        DJNZ    self_test_expand_failure_pattern
+                        EXX
+
+                        LD      A,$47
+                        BIT     0,C
+                        JR      Z,self_test_error_bit_1
+                        OUT     (PORT_COLOR_3),A
+self_test_error_bit_1:  BIT     1,C
+                        JR      Z,self_test_error_bit_2
+                        OUT     (PORT_COLOR_2),A
+self_test_error_bit_2:  BIT     2,C
+                        JR      Z,self_test_error_bit_3
+                        OUT     (PORT_COLOR_1),A
+self_test_error_bit_3:  BIT     3,C
+                        JR      Z,self_test_error_bit_4
+                        OUT     (PORT_COLOR_0),A
+self_test_error_bit_4:  BIT     4,C
+                        JR      Z,self_test_error_bit_5
+                        OUT     (PORT_COLOR_7),A
+self_test_error_bit_5:  BIT     5,C
+                        JR      Z,self_test_error_bit_6
+                        OUT     (PORT_COLOR_6),A
+self_test_error_bit_6:  BIT     6,C
+                        JR      Z,self_test_error_bit_7
+                        OUT     (PORT_COLOR_5),A
+self_test_error_bit_7:  BIT     7,C
+                        JR      Z,self_test_memory_failure_halt
+                        OUT     (PORT_COLOR_4),A
+self_test_memory_failure_halt:
+                        IN      A,(PORT_P2_HANDLE)
+                        JR      self_test_memory_failure_halt
+
+; A holds the nonzero XOR result from one failed byte.  ORing it into C keeps
+; the complete failing-bit mask, then IX resumes at the exact interrupted phase.
+SELF_TEST_ACCUMULATE_FAILURE:
+                        OR      C
+                        LD      C,A
+                        JP      (IX)
 
 ;-------------------------------------------------------------------------------
 ; $0264: Select reset-button diagnostic path
 ;-------------------------------------------------------------------------------
 SELF_TEST_MODE_SELECT:
-                        DB      $FE,$04                 ; $0264  CP $04
-                        DB      $C2,$BE,$02             ; $0266  JP NZ,$02BE
-                        DB      $31,$E2,$C3             ; $0269  LD SP,$C3E2
-                        DB      $DD,$21,$00,$C4         ; $026C  LD IX,$C400
-                        DB      $FD,$21,$77,$02         ; $0270  LD IY,$0277
-                        DB      $C3,$97,$03             ; $0274  JP $0397
+                        CP      $04
+                        JP      NZ,CONVERGENCE_TEST
+                        LD      SP,TERSE_DATA_STACK
+                        LD      IX,TERSE_RETURN_STACK
+                        LD      IY,SELF_TEST_INTERACTIVE
+                        JP      CLEAR_GAME_STATE_AND_PLAYFIELD
 
 ;-------------------------------------------------------------------------------
 ; $0277: Interactive service-test loop
 ;-------------------------------------------------------------------------------
 SELF_TEST_INTERACTIVE:
-                        DB      $3E,$0C                 ; $0277  LD A,$0C
-                        DB      $32,$02,$C2             ; $0279  LD ($C202),A
-                        DB      $3E,$78                 ; $027C  LD A,$78
-                        DB      $32,$01,$C2             ; $027E  LD ($C201),A
-                        DB      $DB,$10                 ; $0281  IN A,($10)
-                        DB      $AF                     ; $0283  XOR A
-                        DB      $32,$FF,$C1             ; $0284  LD ($C1FF),A
-                        DB      $DB,$10                 ; $0287  IN A,($10)
-                        DB      $DB,$10                 ; $0289  IN A,($10)
-                        DB      $CD,$9C,$02             ; $028B  CALL $029C
-                        DB      $3E,$78                 ; $028E  LD A,$78
-                        DB      $32,$FF,$C1             ; $0290  LD ($C1FF),A
-                        DB      $DB,$10                 ; $0293  IN A,($10)
-                        DB      $DB,$11                 ; $0295  IN A,($11)
-                        DB      $CD,$9C,$02             ; $0297  CALL $029C
-                        DB      $18,$E5                 ; $029A  JR $0281
-                        DB      $CD,$AC,$0A             ; $029C  CALL $0AAC
-                        DB      $21,$00,$C0             ; $029F  LD HL,$C000
-                        DB      $E6,$7F                 ; $02A2  AND $7F
-                        DB      $07                     ; $02A4  RLCA
-                        DB      $06,$06                 ; $02A5  LD B,$06
-                        DB      $17                     ; $02A7  RLA
-                        DB      $4F                     ; $02A8  LD C,A
-                        DB      $3E,$00                 ; $02A9  LD A,$00
-                        DB      $CE,$30                 ; $02AB  ADC A, $30
-                        DB      $77                     ; $02AD  LD (HL),A
-                        DB      $23                     ; $02AE  INC HL
-                        DB      $79                     ; $02AF  LD A,C
-                        DB      $10,$F5                 ; $02B0  DJNZ $02A7
-                        DB      $36,$00                 ; $02B2  LD (HL),$00
-                        DB      $21,$00,$C0             ; $02B4  LD HL,$C000
-                        DB      $DB,$10                 ; $02B7  IN A,($10)
-                        DB      $CD,$E4,$15             ; $02B9  CALL $15E4
-                        DB      $F3                     ; $02BC  DI
-                        DB      $C9                     ; $02BD  RET
+; Display the decoded six-bit position of both optical handles.  The left
+; string begins at X=0 and the right string at X=$78, both on row $78.
+                        LD      A,$0C
+                        LD      (TEXT_COLOR),A
+                        LD      A,$78
+                        LD      (TEXT_Y_POSITION),A
+self_test_input_loop:   IN      A,(PORT_P2_HANDLE)
+                        XOR     A
+                        LD      (TEXT_X_POSITION_HI),A
+                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_P2_HANDLE)
+                        CALL    SELF_TEST_DRAW_HANDLE_VALUE
+                        LD      A,$78
+                        LD      (TEXT_X_POSITION_HI),A
+                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_P1_HANDLE)
+                        CALL    SELF_TEST_DRAW_HANDLE_VALUE
+                        JR      self_test_input_loop
+
+; Convert the hardware's Gray-coded handle value to a six-character binary
+; string.  FIRE is not included; this screen verifies the position encoder.
+SELF_TEST_DRAW_HANDLE_VALUE:
+                        CALL    DECODE_HANDLE_POSITION
+                        LD      HL,SELF_TEST_TEXT_BUFFER
+                        AND     $7F
+                        RLCA
+                        LD      B,$06
+self_test_emit_handle_bit:
+                        RLA
+                        LD      C,A
+                        LD      A,$00
+                        ADC     A,$30
+                        LD      (HL),A
+                        INC     HL
+                        LD      A,C
+                        DJNZ    self_test_emit_handle_bit
+                        LD      (HL),$00
+                        LD      HL,SELF_TEST_TEXT_BUFFER
+                        IN      A,(PORT_P2_HANDLE)
+                        CALL    DRAW_TEXT
+                        DI
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $02BE: Convergence/grid display test
 ;-------------------------------------------------------------------------------
 CONVERGENCE_TEST:
-                        DB      $21,$00,$40             ; $02BE  LD HL,$4000
-                        DB      $06,$28                 ; $02C1  LD B,$28
-                        DB      $36,$00                 ; $02C3  LD (HL),$00
-                        DB      $DB,$10                 ; $02C5  IN A,($10)
-                        DB      $23                     ; $02C7  INC HL
-                        DB      $36,$03                 ; $02C8  LD (HL),$03
-                        DB      $23                     ; $02CA  INC HL
-                        DB      $10,$F6                 ; $02CB  DJNZ $02C3
-                        DB      $01,$30,$03             ; $02CD  LD BC,$0330
-                        DB      $36,$00                 ; $02D0  LD (HL),$00
-                        DB      $DB,$10                 ; $02D2  IN A,($10)
-                        DB      $23                     ; $02D4  INC HL
-                        DB      $0D                     ; $02D5  DEC C
-                        DB      $20,$F8                 ; $02D6  JR NZ,$02D0
-                        DB      $10,$F6                 ; $02D8  DJNZ $02D0
-                        DB      $EB                     ; $02DA  EX DE,HL
-                        DB      $21,$00,$40             ; $02DB  LD HL,$4000
-                        DB      $01,$A0,$3D             ; $02DE  LD BC,$3DA0
-                        DB      $7E                     ; $02E1  LD A,(HL)
-                        DB      $12                     ; $02E2  LD (DE),A
-                        DB      $DB,$10                 ; $02E3  IN A,($10)
-                        DB      $13                     ; $02E5  INC DE
-                        DB      $23                     ; $02E6  INC HL
-                        DB      $0D                     ; $02E7  DEC C
-                        DB      $20,$F7                 ; $02E8  JR NZ,$02E1
-                        DB      $10,$F5                 ; $02EA  DJNZ $02E1
-                        DB      $DB,$10                 ; $02EC  IN A,($10)
-                        DB      $18,$FC                 ; $02EE  JR $02EC
+; The first $50-byte scanline alternates $00/$03, producing vertical lines.
+; It is followed by $230 clear bytes.  Repeating that $280-byte seed over the
+; remaining screen produces horizontal lines every eight scanlines.
+                        LD      HL,VIDEO_RAM_BASE
+                        LD      B,$28
+convergence_vertical_pattern:
+                        LD      (HL),$00
+                        IN      A,(PORT_P2_HANDLE)
+                        INC     HL
+                        LD      (HL),$03
+                        INC     HL
+                        DJNZ    convergence_vertical_pattern
+
+                        LD      BC,$0330
+convergence_clear_seed: LD      (HL),$00
+                        IN      A,(PORT_P2_HANDLE)
+                        INC     HL
+                        DEC     C
+                        JR      NZ,convergence_clear_seed
+                        DJNZ    convergence_clear_seed
+
+                        EX      DE,HL
+                        LD      HL,VIDEO_RAM_BASE
+                        LD      BC,$3DA0
+convergence_repeat_seed:
+                        LD      A,(HL)
+                        LD      (DE),A
+                        IN      A,(PORT_P2_HANDLE)
+                        INC     DE
+                        INC     HL
+                        DEC     C
+                        JR      NZ,convergence_repeat_seed
+                        DJNZ    convergence_repeat_seed
+convergence_halt:       IN      A,(PORT_P2_HANDLE)
+                        JR      convergence_halt
 
 ;-------------------------------------------------------------------------------
 ; $02F0: Initial direct-threaded TERSE execution list
@@ -692,58 +795,71 @@ RESET_RUNTIME_STATE:
                         DB      $20,$FB                 ; $0392  JR NZ,$038F
                         DB      $15                     ; $0394  DEC D
                         DB      $20,$F8                 ; $0395  JR NZ,$038F
-                        DB      $21,$00,$C0             ; $0397  LD HL,$C000
-                        DB      $AF                     ; $039A  XOR A
-                        DB      $C5                     ; $039B  PUSH BC
-                        DB      $01,$C2,$02             ; $039C  LD BC,$02C2
-                        DB      $77                     ; $039F  LD (HL),A
-                        DB      $23                     ; $03A0  INC HL
-                        DB      $0D                     ; $03A1  DEC C
-                        DB      $20,$FB                 ; $03A2  JR NZ,$039F
-                        DB      $10,$F9                 ; $03A4  DJNZ $039F
-                        DB      $21,$CB,$C1             ; $03A6  LD HL,$C1CB
-                        DB      $06,$2D                 ; $03A9  LD B,$2D
-                        DB      $77                     ; $03AB  LD (HL),A
-                        DB      $23                     ; $03AC  INC HL
-                        DB      $10,$FC                 ; $03AD  DJNZ $03AB
-                        DB      $DB,$13                 ; $03AF  IN A,($13)
-                        DB      $E6,$06                 ; $03B1  AND $06
-                        DB      $0F                     ; $03B3  RRCA
-                        DB      $47                     ; $03B4  LD B,A
-                        DB      $3A,$FB,$C1             ; $03B5  LD A,($C1FB)
-                        DB      $FE,$02                 ; $03B8  CP $02
-                        DB      $0E,$15                 ; $03BA  LD C,$15
-                        DB      $16,$91                 ; $03BC  LD D,$91
-                        DB      $28,$04                 ; $03BE  JR Z,$03C4
-                        DB      $16,$71                 ; $03C0  LD D,$71
-                        DB      $0E,$10                 ; $03C2  LD C,$10
-                        DB      $78                     ; $03C4  LD A,B
-                        DB      $B7                     ; $03C5  OR A
-                        DB      $28,$07                 ; $03C6  JR Z,$03CF
-                        DB      $7A                     ; $03C8  LD A,D
-                        DB      $91                     ; $03C9  SUB C
-                        DB      $27                     ; $03CA  DAA
-                        DB      $10,$FC                 ; $03CB  DJNZ $03C9
-                        DB      $18,$01                 ; $03CD  JR $03D0
-                        DB      $7A                     ; $03CF  LD A,D
-                        DB      $32,$DB,$C1             ; $03D0  LD ($C1DB),A
-                        DB      $11,$F0,$38             ; $03D3  LD DE,$38F0
-                        DB      $21,$00,$40             ; $03D6  LD HL,$4000
-                        DB      $36,$00                 ; $03D9  LD (HL),$00
-                        DB      $DB,$10                 ; $03DB  IN A,($10)
-                        DB      $23                     ; $03DD  INC HL
-                        DB      $1D                     ; $03DE  DEC E
-                        DB      $20,$F8                 ; $03DF  JR NZ,$03D9
-                        DB      $15                     ; $03E1  DEC D
-                        DB      $20,$F5                 ; $03E2  JR NZ,$03D9
-                        DB      $3A,$FB,$C1             ; $03E4  LD A,($C1FB)
-                        DB      $FE,$02                 ; $03E7  CP $02
-                        DB      $28,$05                 ; $03E9  JR Z,$03F0
-                        DB      $3E,$FF                 ; $03EB  LD A,$FF
-                        DB      $32,$E4,$C1             ; $03ED  LD ($C1E4),A
-                        DB      $CD,$82,$16             ; $03F0  CALL $1682
-                        DB      $C1                     ; $03F3  POP BC
-                        DB      $FD,$E9                 ; $03F4  JP (IY)
+; Normal game reset enters here by falling through from RESET_RUNTIME_STATE.
+; The interactive service test jumps here directly, using IY as its return.
+CLEAR_GAME_STATE_AND_PLAYFIELD:
+                        LD      HL,RAM_BASE
+                        XOR     A
+                        PUSH    BC
+                        LD      BC,$02C2
+clear_object_state:     LD      (HL),A
+                        INC     HL
+                        DEC     C
+                        JR      NZ,clear_object_state
+                        DJNZ    clear_object_state
+
+                        LD      HL,SOUND_TIMER_BLOCK
+                        LD      B,$2D
+clear_timed_state:      LD      (HL),A
+                        INC     HL
+                        DJNZ    clear_timed_state
+
+; Select the initial packed-BCD game timer from player count and the two play-
+; time DIP bits.  Each DIP step removes 10 seconds for one player or 15 seconds
+; for two players.
+                        IN      A,(PORT_DIP_SWITCHES)
+                        AND     $06
+                        RRCA
+                        LD      B,A
+                        LD      A,(ACTIVE_PLAYER_COUNT)
+                        CP      $02
+                        LD      C,$15
+                        LD      D,$91
+                        JR      Z,game_time_parameters_ready
+                        LD      D,$71
+                        LD      C,$10
+game_time_parameters_ready:
+                        LD      A,B
+                        OR      A
+                        JR      Z,use_longest_game_time
+                        LD      A,D
+reduce_game_time:       SUB     C
+                        DAA
+                        DJNZ    reduce_game_time
+                        JR      game_time_ready
+use_longest_game_time:  LD      A,D
+game_time_ready:        LD      (GAME_TIME_BCD),A
+
+; Clear the active playfield while preserving the upper status area.
+                        LD      DE,$38F0
+                        LD      HL,VIDEO_RAM_BASE
+clear_active_playfield: LD      (HL),$00
+                        IN      A,(PORT_P2_HANDLE)
+                        INC     HL
+                        DEC     E
+                        JR      NZ,clear_active_playfield
+                        DEC     D
+                        JR      NZ,clear_active_playfield
+
+                        LD      A,(ACTIVE_PLAYER_COUNT)
+                        CP      $02
+                        JR      Z,draw_initial_player_status
+                        LD      A,$FF
+                        LD      (LEFT_STATION_DISABLED),A
+draw_initial_player_status:
+                        CALL    DRAW_PLAYER_STATUS
+                        POP     BC
+                        JP      (IY)
 
 ;-------------------------------------------------------------------------------
 ; $03F6: Start/credit selection and prompt rendering
