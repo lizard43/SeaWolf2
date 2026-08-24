@@ -23,6 +23,27 @@ RAM_BASE                EQU     $C000
 TERSE_DATA_STACK        EQU     $C3E2
 TERSE_RETURN_STACK      EQU     $C400
 
+; Frame-timed discrete-sound producers.  The interrupt handler treats every
+; nonzero byte as an asserted line and decrements the timers at 60 Hz.
+; $C1D0-$C1D5 are packed in reverse address order onto port $40.
+SOUND_RIGHT_MINE_HIT_TIMER  EQU $C1D0       ; port $40 bit 5
+SOUND_RIGHT_SHIP_HIT_TIMER  EQU $C1D1       ; port $40 bit 4
+SOUND_RIGHT_TORPEDO_TIMER   EQU $C1D2       ; port $40 bit 3
+SOUND_LEFT_MINE_HIT_TIMER   EQU $C1D3       ; port $40 bit 2
+SOUND_LEFT_SHIP_HIT_TIMER   EQU $C1D4       ; port $40 bit 1
+SOUND_LEFT_TORPEDO_TIMER    EQU $C1D5       ; port $40 bit 0
+COIN_COUNTER_PULSE_TIMER    EQU $C1D6       ; port $41 bit 6
+SOUND_LEFT_SONAR_TIMER      EQU $C1D7       ; port $41 bit 5
+SOUND_RIGHT_SONAR_TIMER     EQU $C1D8       ; port $41 bit 4
+SOUND_DIVE_PAN_TIMER        EQU $C1D9       ; bits 7-5 -> port $41 bits 2-0;
+                                                    ; bit 5 also triggers bit 3
+
+SOUND_FRAME_DIVIDER         EQU $C1CA
+SOUND_TIMER_BLOCK           EQU $C1CB       ; 16 timers, $C1CB-$C1DA
+SONAR_CADENCE_TIMER         EQU $C1CD
+SONAR_PING_COUNT            EQU $C1E1
+SOUND_DIVE_PAN_XOR          EQU $C1FA
+
 _DSPATCH                EQU     $E9FD           ; JP (IY), stored little-endian
 
                         ORG     $0000
@@ -823,11 +844,11 @@ control_wait:           DW      TERSE_BEGIN
                         DW      $0735
 control_no_state:       DW      TERSE_INLINE_BFETCH,$C1FB
                         DW      TERSE_ZERO_BRANCH,control_no_player
-                        DW      $0AF4,$0613,$0711,$0ACB
+                        DW      $0AF4,PROCESS_SHIP_HIT,$0711,UPDATE_SONAR_SEQUENCE
                         DW      TERSE_INLINE_BFETCH,$C1DF
                         DW      TERSE_BYTE_NOT
                         DW      TERSE_ZERO_BRANCH,control_continue
-                        DW      $07C4,$08A7,$09C1
+                        DW      $07C4,$08A7,POLL_TORPEDO_FIRE
                         DW      TERSE_BRANCH,control_continue
 control_no_player:      DW      $0BDF,$0C1A
                         DW      TERSE_INLINE_BFETCH,$C206
@@ -835,7 +856,7 @@ control_no_player:      DW      $0BDF,$0C1A
                         DW      TERSE_TRUE
                         DW      TERSE_LIT,$C1DF
                         DW      TERSE_BSTORE
-control_continue:       DW      $0C56
+control_continue:       DW      PULSE_COIN_COUNTER
                         DW      TERSE_INLINE_BFETCH,$C1DE
                         DW      TERSE_UNTIL
                         DW      TERSE_RETURN
@@ -924,29 +945,228 @@ CLEAR_PLAYER_LAMPS:
                         DB      $8E,$20,$02,$3E,$9A,$FD,$77,$11,$F1,$30,$28,$FD,$36,$11,$A0,$FD ; $0957  . .>..w..0(.6...
                         DB      $CB,$14,$F6,$FD,$46,$0D,$FD,$7E,$0C,$2F,$4F,$78,$2F,$47,$03,$FD ; $0967  ....F..~./Ox/G..
                         DB      $71,$0C,$FD,$70,$0D,$FD,$7E,$01,$FE,$05,$3E,$96,$28,$02,$3E,$8C ; $0977  q..p..~...>.(.>.
-                        DB      $FD,$77,$0F,$FD,$7E,$01,$FE,$05,$38,$2B,$FE,$08,$20,$18,$3E,$F0 ; $0987  .w..~...8+.. .>.
-                        DB      $32,$D9,$C1,$FD,$CB,$14,$76,$3E,$87,$28,$02,$3E,$80,$32,$FA,$C1 ; $0997  2.....v>.(.>.2..
-                        DB      $FD,$36,$17,$0C,$18,$0F,$3E,$14,$32,$CD,$C1,$3E,$05,$32,$D7,$C1 ; $09A7  .6....>.2..>.2..
-                        DB      $3E,$0A,$32,$E1,$C1,$FD,$36,$00,$80,$C9,$C5,$FD,$E5,$3A,$FB,$C1 ; $09B7  >.2...6......:..
-                        DB      $FE,$02,$20,$0F,$0E,$10,$11,$CB,$C1,$21,$ED,$C1,$FD,$21,$FA,$C0 ; $09C7  .. ......!...!..
-                        DB      $CD,$EE,$09,$0E,$11,$11,$CC,$C1,$21,$F0,$C1,$FD,$21,$13,$C1,$CD ; $09D7  ........!...!...
-                        DB      $EE,$09,$FD,$E1,$C1,$FD,$E9,$7E,$B7,$C8,$2B,$ED,$78,$E6,$80,$BE ; $09E7  .......~..+.x...
-                        DB      $C8,$77,$B7,$C8,$3E,$80,$32,$FA,$C1,$23,$35,$20,$06,$3E,$A0,$12 ; $09F7  .w..>.2..#5 .>..
-                        DB      $AF,$18,$08,$46,$AF,$37,$17,$10,$FC,$F6,$10,$23,$77,$2B,$47,$51 ; $0A07  ...F.7.....#w+GQ
-                        DB      $79,$C6,$32,$4F,$ED,$41,$4A,$7E,$B7,$21,$00,$00,$28,$07,$11,$32 ; $0A17  y.2O.AJ~.!..(..2
-                        DB      $00,$19,$3D,$20,$FC,$FD,$E5,$D1,$19,$E5,$FD,$E1,$CD,$79,$0A,$ED ; $0A27  ..= .........y..
-                        DB      $78,$CD,$AC,$0A,$D6,$12,$30,$02,$3E,$00,$87,$FE,$40,$38,$02,$3E ; $0A37  x.....0.>... 8.>
-                        DB      $3E,$E6,$3E,$21,$48,$0D,$CB,$41,$28,$03,$21,$88,$0D,$5F,$16,$00 ; $0A47  >.>!H..A(.!.._..
-                        DB      $19,$7E,$FD,$77,$0F,$23,$7E,$FD,$77,$0C,$07,$30,$04,$FD,$36,$0D ; $0A57  .~.w.#~.w..0..6.
-                        DB      $FF,$FD,$36,$00,$80,$CB,$41,$21,$D5,$C1,$28,$03,$21,$D2,$C1,$36 ; $0A67  ..6...A!..(.!..6
-                        DB      $38,$C9,$CD,$9F,$08,$FD,$36,$01,$07,$FD,$36,$03,$0C,$FD,$36,$06 ; $0A77  8.....6...6...6.
-                        DB      $FC,$FD,$36,$08,$BB,$FD,$36,$09,$23,$FD,$36,$11,$9C,$FD,$36,$14 ; $0A87  ..6...6.#.6...6.
-                        DB      $08,$FD,$36,$13,$11,$FD,$36,$12,$2D,$3E,$08,$CB,$41,$28,$02,$3E ; $0A97  ..6...6.->..A(.>
-                        DB      $04,$FD,$77,$17,$C9,$C5,$D5,$E6,$3F,$4F,$47,$16,$20,$79,$A2,$5F ; $0AA7  ..w.....?OG. y._
-                        DB      $78,$CB,$3F,$A2,$AB,$5F,$7A,$2F,$A0,$B3,$47,$CB,$3A,$20,$EE,$78 ; $0AB7  x.?.._z/..G.: .x
-                        DB      $D1,$C1,$C9,$37,$21,$CD,$C1,$7E,$B7,$28,$20,$FE,$08,$30,$1C,$11 ; $0AC7  ...7!..~.( ..0..
-                        DB      $E1,$C1,$1A,$B7,$28,$15,$3D,$12,$1F,$38,$09,$3E,$04,$32,$D8,$C1 ; $0AD7  ....(.=..8.>.2..
-                        DB      $36,$20,$18,$07,$3E,$04,$32,$D7,$C1,$36,$10,$FD,$E9,$C5,$FD,$E5 ; $0AE7  6 ..>.2..6......
+                        LD      (IY+$0F),A
+                        LD      A,(IY+$01)
+                        CP      $05
+                        JR      C,target_sound_done
+                        CP      $08
+                        JR      NZ,START_SONAR_SEQUENCE
+
+; Target type $08 begins the dive effect.  $F0 supplies both the descending
+; three-bit pan code and the first port-$41 bit-3 trigger edge.
+START_DIVE_SOUND:
+                        LD      A,$F0
+                        LD      (SOUND_DIVE_PAN_TIMER),A
+                        BIT     6,(IY+$14)
+                        LD      A,$87
+                        JR      Z,dive_pan_selected
+                        LD      A,$80
+dive_pan_selected:      LD      (SOUND_DIVE_PAN_XOR),A
+                        LD      (IY+$17),$0C
+                        JR      target_sound_done
+
+; Other target types start a ten-ping alternating sonar sequence.  The first
+; left-channel pulse is asserted immediately; UPDATE_SONAR_SEQUENCE schedules
+; the remaining left/right pulses as SONAR_CADENCE_TIMER expires.
+START_SONAR_SEQUENCE:   LD      A,$14
+                        LD      (SONAR_CADENCE_TIMER),A
+TRIGGER_INITIAL_LEFT_SONAR:
+                        LD      A,$05
+                        LD      (SOUND_LEFT_SONAR_TIMER),A
+                        LD      A,$0A
+                        LD      (SONAR_PING_COUNT),A
+target_sound_done:      LD      (IY+$00),$80
+                        RET
+
+;-------------------------------------------------------------------------------
+; $09C1: Poll both stations and create a torpedo on a fire-button edge
+;-------------------------------------------------------------------------------
+POLL_TORPEDO_FIRE:
+                        PUSH    BC
+                        PUSH    IY
+                        LD      A,($C1FB)
+                        CP      $02
+                        JR      NZ,poll_right_torpedo
+                        LD      C,PORT_P2_HANDLE
+                        LD      DE,$C1CB
+                        LD      HL,$C1ED
+                        LD      IY,$C0FA
+                        CALL    UPDATE_PLAYER_TORPEDO_FIRE
+poll_right_torpedo:     LD      C,PORT_P1_HANDLE
+                        LD      DE,$C1CC
+                        LD      HL,$C1F0
+                        LD      IY,$C113
+                        CALL    UPDATE_PLAYER_TORPEDO_FIRE
+                        POP     IY
+                        POP     BC
+                        JP      (IY)
+
+; C = handle/fire input port; DE = reload timer; HL = player fire state;
+; IY = first torpedo object for the station.
+UPDATE_PLAYER_TORPEDO_FIRE:
+                        LD      A,(HL)
+                        OR      A
+                        RET     Z
+                        DEC     HL
+                        IN      A,(C)
+                        AND     $80
+                        CP      (HL)
+                        RET     Z
+                        LD      (HL),A
+                        OR      A
+                        RET     Z
+                        LD      A,$80
+                        LD      (SOUND_DIVE_PAN_XOR),A
+                        INC     HL
+                        DEC     (HL)
+                        JR      NZ,torpedo_slot_available
+                        LD      A,$A0
+                        LD      (DE),A
+                        XOR     A
+                        JR      torpedo_slot_selected
+torpedo_slot_available: LD      B,(HL)
+                        XOR     A
+torpedo_slot_mask:      SCF
+                        RLA
+                        DJNZ    torpedo_slot_mask
+                        OR      $10
+torpedo_slot_selected:  INC     HL
+                        LD      (HL),A
+                        DEC     HL
+                        LD      B,A
+                        LD      D,C
+                        LD      A,C
+                        ADD     A,$32
+                        LD      C,A
+                        OUT     (C),B
+                        LD      C,D
+                        LD      A,(HL)
+                        OR      A
+                        LD      HL,$0000
+                        JR      Z,torpedo_record_selected
+                        LD      DE,$0032
+torpedo_record_offset:  ADD     HL,DE
+                        DEC     A
+                        JR      NZ,torpedo_record_offset
+torpedo_record_selected:
+                        PUSH    IY
+                        POP     DE
+                        ADD     HL,DE
+                        PUSH    HL
+                        POP     IY
+                        CALL    INITIALIZE_TORPEDO_OBJECT
+                        IN      A,(C)
+                        CALL    DECODE_HANDLE_POSITION
+                        SUB     $12
+                        JR      NC,torpedo_aim_nonnegative
+                        LD      A,$00
+torpedo_aim_nonnegative:
+                        ADD     A,A
+                        CP      $40
+                        JR      C,torpedo_aim_in_range
+                        LD      A,$3E
+torpedo_aim_in_range:   AND     $3E
+                        LD      HL,$0D48
+                        BIT     0,C
+                        JR      Z,torpedo_trajectory_table
+                        LD      HL,$0D88
+torpedo_trajectory_table:
+                        LD      E,A
+                        LD      D,$00
+                        ADD     HL,DE
+                        LD      A,(HL)
+                        LD      (IY+$0F),A
+                        INC     HL
+                        LD      A,(HL)
+                        LD      (IY+$0C),A
+                        RLCA
+                        JR      NC,torpedo_velocity_ready
+                        LD      (IY+$0D),$FF
+torpedo_velocity_ready: LD      (IY+$00),$80
+
+; Port $10 is the left station and port $11 is the right station in the sound
+; wiring.  A new torpedo holds its corresponding trigger high for $38 frames.
+TRIGGER_TORPEDO_SOUND:
+                        BIT     0,C
+                        LD      HL,SOUND_LEFT_TORPEDO_TIMER
+                        JR      Z,torpedo_sound_selected
+                        LD      HL,SOUND_RIGHT_TORPEDO_TIMER
+torpedo_sound_selected: LD      (HL),$38
+                        RET
+
+INITIALIZE_TORPEDO_OBJECT:
+                        CALL    $089F
+                        LD      (IY+$01),$07
+                        LD      (IY+$03),$0C
+                        LD      (IY+$06),$FC
+                        LD      (IY+$08),$BB
+                        LD      (IY+$09),$23
+                        LD      (IY+$11),$9C
+                        LD      (IY+$14),$08
+                        LD      (IY+$13),$11
+                        LD      (IY+$12),$2D
+                        LD      A,$08
+                        BIT     0,C
+                        JR      Z,torpedo_color_selected
+                        LD      A,$04
+torpedo_color_selected: LD      (IY+$17),A
+                        RET
+
+DECODE_HANDLE_POSITION:
+                        PUSH    BC
+                        PUSH    DE
+                        AND     $3F
+                        LD      C,A
+                        LD      B,A
+                        LD      D,$20
+decode_handle_bit:      LD      A,C
+                        AND     D
+                        LD      E,A
+                        LD      A,B
+                        SRL     A
+                        AND     D
+                        XOR     E
+                        LD      E,A
+                        LD      A,D
+                        CPL
+                        AND     B
+                        OR      E
+                        LD      B,A
+                        SRL     D
+                        JR      NZ,decode_handle_bit
+                        LD      A,B
+                        POP     DE
+                        POP     BC
+                        RET
+                        SCF                             ; $0ACA, unreachable pad
+
+;-------------------------------------------------------------------------------
+; $0ACB: Alternate sonar between speakers while the sequence remains active
+;-------------------------------------------------------------------------------
+UPDATE_SONAR_SEQUENCE:
+                        LD      HL,SONAR_CADENCE_TIMER
+                        LD      A,(HL)
+                        OR      A
+                        JR      Z,sonar_update_done
+                        CP      $08
+                        JR      NC,sonar_update_done
+                        LD      DE,SONAR_PING_COUNT
+                        LD      A,(DE)
+                        OR      A
+                        JR      Z,sonar_update_done
+                        DEC     A
+                        LD      (DE),A
+                        RRA
+                        JR      C,TRIGGER_LEFT_SONAR
+TRIGGER_RIGHT_SONAR:    LD      A,$04
+                        LD      (SOUND_RIGHT_SONAR_TIMER),A
+                        LD      (HL),$20
+                        JR      sonar_update_done
+TRIGGER_LEFT_SONAR:     LD      A,$04
+                        LD      (SOUND_LEFT_SONAR_TIMER),A
+                        LD      (HL),$10
+sonar_update_done:      JP      (IY)
+                        DB      $C5,$FD,$E5             ; $0AF4
                         DB      $FD,$21,$00,$C0,$11,$19,$00,$06,$04,$FD,$CB,$00,$56,$28,$42,$FD ; $0AF7  .!..........V(B.
                         DB      $7E,$01,$FE,$08,$3E,$04,$28,$02,$3E,$02,$FD,$BE,$18,$30,$32,$FD ; $0B07  ~...>.(.>....02.
                         DB      $CB,$00,$96,$C5,$D5,$FD,$7E,$0F,$32,$FF,$C1,$FD,$7E,$08,$D6,$1A ; $0B17  ......~.2...~...
@@ -968,9 +1188,26 @@ CLEAR_PLAYER_LAMPS:
                         DB      $C1,$FD,$E9,$C5,$3A,$F8,$C1,$B7,$28,$32,$21,$CC,$C1,$7E,$B7,$20 ; $0C17  ....:...(2!..~.
                         DB      $2B,$36,$1E,$3E,$02,$32,$01,$C2,$3E,$0A,$32,$FF,$C1,$3A,$02,$C2 ; $0C27  +6.>.2..>.2..:..
                         DB      $EE,$0C,$32,$02,$C2,$21,$E7,$1A,$3A,$05,$C2,$FE,$00,$28,$0A,$21 ; $0C37  ..2..!..:....(.!
-                        DB      $F7,$1A,$FE,$01,$28,$03,$21,$07,$1B,$CD,$E4,$15,$C1,$FD,$E9,$11 ; $0C47  ....(.!.........
-                        DB      $D6,$C1,$1A,$B7,$20,$0F,$21,$07,$C2,$7E,$B7,$28,$08,$35,$3E,$0A ; $0C57  .... .!..~.(.5>.
-                        DB      $12,$21,$06,$C2,$34,$FD,$E9,$0A,$03,$5F,$0A,$03,$57,$0A,$03,$67 ; $0C67  .!..4...._..W..g
+                        DB      $F7,$1A,$FE,$01,$28,$03,$21,$07,$1B,$CD,$E4,$15,$C1,$FD,$E9     ; $0C47
+
+; $C1D6 is adjacent to the sound timers but drives port-$41 bit 6, the coin
+; counter output.  Each queued coin produces a ten-frame hardware pulse.
+PULSE_COIN_COUNTER:
+                        LD      DE,COIN_COUNTER_PULSE_TIMER
+                        LD      A,(DE)
+                        OR      A
+                        JR      NZ,coin_counter_done
+                        LD      HL,$C207
+                        LD      A,(HL)
+                        OR      A
+                        JR      Z,coin_counter_done
+                        DEC     (HL)
+                        LD      A,$0A
+                        LD      (DE),A
+                        LD      HL,$C206
+                        INC     (HL)
+coin_counter_done:      JP      (IY)
+                        DB      $0A,$03,$5F,$0A,$03,$57,$0A,$03,$67 ; $0C6E
                         DB      $2E,$00,$22,$00,$C2,$0A,$03,$67,$22,$FE,$C1,$3E,$0C,$32,$02,$C2 ; $0C77  .."....g"..>.2..
                         DB      $EB,$0A,$03,$B7,$C5,$20,$05,$CD,$E4,$15,$18,$03,$CD,$D7,$15,$C1 ; $0C87  ..... ..........
                         DB      $FD,$E9,$C5,$CD,$A0,$0C,$C1,$FD,$E9,$21,$09,$C2,$3E,$76,$32,$FF ; $0C97  .........!..>v2.
@@ -1118,23 +1355,127 @@ TEXT_SUB:
 ; $1395: Frame interrupt entry and hardware update loop
 ;-------------------------------------------------------------------------------
 VIDEO_INTERRUPT_HANDLER:
-                        DB      $D3,$04,$08,$F5,$C5,$D5,$E5,$DD,$E5,$FD,$E5,$CD,$66,$17,$FB,$DB ; $1395  ............f...
-                        DB      $10,$21,$CA,$C1,$7E,$34,$B7,$20,$54                             ; $13A5  .!..~4. T
+                        OUT     ($04),A
+                        EX      AF,AF'
+                        PUSH    AF
+                        PUSH    BC
+                        PUSH    DE
+                        PUSH    HL
+                        PUSH    IX
+                        PUSH    IY
+                        CALL    $1766
+                        EI
+                        IN      A,(PORT_P2_HANDLE)
+                        LD      HL,SOUND_FRAME_DIVIDER
+                        LD      A,(HL)
+                        INC     (HL)
+                        OR      A
+                        JR      NZ,decay_frame_timers
 
 ;-------------------------------------------------------------------------------
-; $13AE: Build and output Sea Wolf II's two sound control bytes
+; $13AE: Pack $C1D0-$C1D9 and output both discrete-sound control ports
 ;-------------------------------------------------------------------------------
 UPDATE_DISCRETE_SOUND:
-                        DB      $21,$D0,$C1,$01,$00,$06,$AF,$BE,$CB,$11,$23,$10,$FA,$79,$D3,$40 ; $13AE  !.........#..y.
-                        DB      $AF,$01,$00,$03,$BE,$CB,$11,$23,$10,$FA,$CB,$21,$CB,$21,$CB,$21 ; $13BE  .......#...!.!.!
-                        DB      $CB,$21,$7E,$07,$07,$07,$E6,$07,$21,$FA,$C1,$CB,$9F,$CB,$47,$28 ; $13CE  .!~.....!.....G(
-                        DB      $02,$CB,$DF,$AE,$B1,$D3,$41,$CD,$17,$17,$CD,$17,$17,$CD,$33,$17 ; $13DE  ......A.......3.
-                        DB      $CD,$33,$17,$CD,$33,$17,$CD,$33,$17,$CD,$4A,$17,$21,$CA,$C1,$35 ; $13EE  .3..3..3..J.!..5
-                        DB      $7E,$B7,$20,$AC,$06,$10,$21,$CB,$C1,$AF,$BE,$28,$01,$35,$23,$10 ; $13FE  ~. ...!....(.5#.
-                        DB      $F8,$21,$DA,$C1,$AF,$BE,$20,$0B,$36,$3C,$23,$7E,$B7,$28,$04,$D6 ; $140E  .!.... .6<#~.(..
-                        DB      $01,$27,$77,$DB,$12,$47,$DB,$12,$B8,$20,$F8,$E6,$01,$21,$F9,$C1 ; $141E  .'w..G... ...!..
-                        DB      $F5,$AE,$28,$0A,$A6,$28,$07,$3A,$07,$C2,$3C,$32,$07,$C2,$F1,$77 ; $142E  ..(..(.:..<2...w
-                        DB      $FD,$E1,$DD,$E1,$E1,$D1,$C1,$F1,$FB,$C9,$08,$E3,$E3,$00,$00,$00 ; $143E  ................
+; The reverse walk created by RL maps the six sequential timers as follows:
+; D5/D4/D3 -> left torpedo/ship/mine on bits 0/1/2, and
+; D2/D1/D0 -> right torpedo/ship/mine on bits 3/4/5.
+                        LD      HL,SOUND_RIGHT_MINE_HIT_TIMER
+                        LD      BC,$0600
+                        XOR     A
+pack_port40_bit:        CP      (HL)
+                        RL      C
+                        INC     HL
+                        DJNZ    pack_port40_bit
+                        LD      A,C
+                        OUT     (PORT_SOUND_EVENTS),A
+
+; D6/D7/D8 become port-$41 bits 6/5/4: coin counter, left sonar,
+; right sonar.  HL then advances to D9 for the dive pan/trigger field.
+                        XOR     A
+                        LD      BC,$0300
+pack_port41_timer:      CP      (HL)
+                        RL      C
+                        INC     HL
+                        DJNZ    pack_port41_timer
+                        SLA     C
+                        SLA     C
+                        SLA     C
+                        SLA     C
+                        LD      A,(HL)
+                        RLCA
+                        RLCA
+                        RLCA
+                        AND     $07
+                        LD      HL,SOUND_DIVE_PAN_XOR
+                        RES     3,A
+                        BIT     0,A
+                        JR      Z,dive_trigger_ready
+                        SET     3,A                   ; D9 bit 5 also starts dive
+dive_trigger_ready:     XOR     (HL)
+                        OR      C
+                        OUT     (PORT_SOUND_CONTROL),A
+                        CALL    $1717
+                        CALL    $1717
+                        CALL    $1733
+                        CALL    $1733
+                        CALL    $1733
+                        CALL    $1733
+                        CALL    $174A
+                        LD      HL,SOUND_FRAME_DIVIDER
+                        DEC     (HL)
+                        LD      A,(HL)
+                        OR      A
+                        JR      NZ,UPDATE_DISCRETE_SOUND
+
+; All nonzero bytes in $C1CB-$C1DA decay once per video frame.  This includes
+; the ten output producers at $C1D0-$C1D9 and their surrounding cadence timers.
+decay_frame_timers:     LD      B,$10
+                        LD      HL,SOUND_TIMER_BLOCK
+decay_frame_timer:      XOR     A
+                        CP      (HL)
+                        JR      Z,frame_timer_done
+                        DEC     (HL)
+frame_timer_done:       INC     HL
+                        DJNZ    decay_frame_timer
+                        LD      HL,$C1DA
+                        XOR     A
+                        CP      (HL)
+                        JR      NZ,read_coin_input
+                        LD      (HL),$3C
+                        INC     HL
+                        LD      A,(HL)
+                        OR      A
+                        JR      Z,read_coin_input
+                        SUB     $01
+                        DAA
+                        LD      (HL),A
+read_coin_input:
+coin_input_stable:      IN      A,(PORT_COIN_START)
+                        LD      B,A
+                        IN      A,(PORT_COIN_START)
+                        CP      B
+                        JR      NZ,coin_input_stable
+                        AND     $01
+                        LD      HL,$C1F9
+                        PUSH    AF
+                        XOR     (HL)
+                        JR      Z,save_coin_input
+                        AND     (HL)
+                        JR      Z,save_coin_input
+                        LD      A,($C207)
+                        INC     A
+                        LD      ($C207),A
+save_coin_input:        POP     AF
+                        LD      (HL),A
+                        POP     IY
+                        POP     IX
+                        POP     HL
+                        POP     DE
+                        POP     BC
+                        POP     AF
+                        EI
+                        RET
+                        DB      $08,$E3,$E3,$00,$00,$00 ; $1448
                         DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$D3,$04,$08,$F5,$E5,$CD,$66 ; $144E  ...............f
                         DB      $17,$E1,$F1,$FB,$C9,$DD,$CB,$00,$76,$C2,$DA,$17,$CD,$71,$19,$DD ; $145E  ........v....q..
                         DB      $CB,$00,$66,$20,$26,$DD,$7E,$01,$FE,$08,$20,$18,$DD,$34,$02,$DD ; $146E  ..f &.~... ..4..
@@ -1150,12 +1491,60 @@ UPDATE_DISCRETE_SOUND:
                         DB      $23,$10,$F8,$48,$23,$5E,$23,$56,$D5,$FD,$E1,$06,$02,$FD,$CB,$00 ; $150E  #..H#^#V........
                         DB      $7E,$28,$69,$DD,$7E,$0F,$C6,$04,$FD,$96,$0F,$38,$5F,$FD,$66,$13 ; $151E  ~(i.~......8_.f.
                         DB      $FD,$6E,$12,$56,$14,$CB,$22,$CB,$22,$BA,$30,$50,$FD,$CB,$00,$76 ; $152E  .n.V..".".0P...v
-                        DB      $20,$4A,$AF,$FD,$77,$02,$FD,$CB,$00,$F6,$FD,$CB,$00,$EE,$DD,$E5 ; $153E   J..w...........
-                        DB      $E1,$16,$30,$FD,$CB,$00,$9E,$CB,$45,$20,$06,$FD,$CB,$00,$DE,$16 ; $154E  ..0.....E ......
-                        DB      $06,$DD,$46,$17,$DD,$CB,$00,$BE,$3E,$02,$B9,$3E,$24,$0E,$08,$F5 ; $155E  ..F.....>..>$...
-                        DB      $DC,$A1,$14,$F1,$38,$07,$3E,$12,$0E,$40,$FD,$70,$17,$A2,$21,$D5 ; $156E  ....8.>.. .p..!.
-                        DB      $C1,$06,$06,$CB,$3F,$30,$02,$71,$C9,$2B,$10,$F7,$11,$19,$00,$FD ; $157E  ....?0.q.+......
-                        DB      $19,$10,$8A,$C9,$DD,$7E,$08,$06,$00,$21,$E4,$1A,$BE,$30,$04,$23 ; $158E  .....~...!...0.#
+                        DB      $20,$4A,$AF,$FD,$77,$02,$FD,$CB,$00,$F6,$FD,$CB,$00,$EE ; $153E
+
+; The collision resolver reaches this producer after a torpedo overlaps a
+; target.  IX record parity selects the cabinet side; the target class in C
+; selects ship-hit or mine-hit.  D becomes the matching two-bit side mask.
+SELECT_COLLISION_SOUND_SIDE:
+                        PUSH    IX
+                        POP     HL
+                        LD      D,$30                  ; right ship/mine bits 4/5
+                        RES     3,(IY+$00)
+                        BIT     0,L
+                        JR      NZ,collision_side_selected
+                        SET     3,(IY+$00)
+                        LD      D,$06                  ; left ship/mine bits 1/2
+collision_side_selected:
+                        LD      B,(IX+$17)
+                        RES     7,(IX+$00)
+
+; C > 2 is a mine collision: mask $24 selects bits 2/5 and produces an
+; eight-frame mine-hit pulse.  C <= 2 is a ship collision: mask $12 selects
+; bits 1/4 and produces a $40-frame ship-hit pulse.
+TRIGGER_SHIP_OR_MINE_HIT_SOUND:
+                        LD      A,$02
+                        CP      C
+select_mine_hit_sound:
+                        LD      A,$24
+                        LD      C,$08
+                        PUSH    AF
+                        CALL    C,$14A1
+                        POP     AF
+                        JR      C,hit_sound_class_selected
+select_ship_hit_sound:
+                        LD      A,$12
+                        LD      C,$40
+                        LD      (IY+$17),B
+hit_sound_class_selected:
+                        AND     D
+                        LD      HL,SOUND_LEFT_TORPEDO_TIMER
+                        LD      B,$06
+
+; Scan port-$40 order from bit 0 / $C1D5 down to bit 5 / $C1D0.  The masks
+; above never select the torpedo slots; they land only on ship-hit or mine-hit.
+store_hit_sound_timer:  SRL     A
+                        JR      NC,next_hit_sound_timer
+                        LD      (HL),C
+                        RET
+next_hit_sound_timer:   DEC     HL
+                        DJNZ    store_hit_sound_timer
+next_collision_candidate:
+                        LD      DE,$0019
+                        ADD     IY,DE
+                        DJNZ    $151B
+                        RET
+                        DB      $DD,$7E,$08,$06,$00,$21,$E4,$1A,$BE,$30,$04,$23 ; $1592
                         DB      $04,$18,$F9,$DD,$70,$18,$CD,$33,$18,$CD,$FA,$18,$C9,$DD,$CB,$00 ; $159E  ....p..3........
                         DB      $76,$28,$07,$DD,$36,$02,$00,$C3,$DA,$17,$CD,$71,$19,$DD,$CB,$00 ; $15AE  v(..6......q....
                         DB      $66,$28,$0F,$DD,$CB,$00,$A6,$DD,$36,$0F,$00,$DD,$36,$0E,$00,$CD ; $15BE  f(......6...6...
