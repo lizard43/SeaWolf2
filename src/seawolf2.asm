@@ -23,6 +23,87 @@ RAM_BASE                EQU     $C000
 TERSE_DATA_STACK        EQU     $C3E2
 TERSE_RETURN_STACK      EQU     $C400
 
+; Object/entity record ABI.  All three scheduler pools use this exact $19-byte
+; layout.  Vertical motion is accelerated fixed-point; horizontal motion uses
+; a constant fixed-point velocity.  In each little-endian pair the low byte is
+; fractional and the high byte is the screen coordinate used by rendering and
+; collision code.
+OBJECT_RECORD_SIZE          EQU $19
+OBJECT_FLAGS                EQU $00
+OBJECT_TYPE                 EQU $01
+OBJECT_TIMER                EQU $02
+OBJECT_Y_ACCEL_LO           EQU $03
+OBJECT_Y_ACCEL_HI           EQU $04
+OBJECT_Y_VELOCITY_LO        EQU $05
+OBJECT_Y_VELOCITY_HI        EQU $06
+OBJECT_Y_POSITION_LO        EQU $07
+OBJECT_Y_POSITION_HI        EQU $08
+OBJECT_Y_MIN                EQU $09
+OBJECT_RESERVED_0A          EQU $0A
+OBJECT_RESERVED_0B          EQU $0B
+OBJECT_X_VELOCITY_LO        EQU $0C
+OBJECT_X_VELOCITY_HI        EQU $0D
+OBJECT_X_POSITION_LO        EQU $0E
+OBJECT_X_POSITION_HI        EQU $0F
+OBJECT_RESERVED_10          EQU $10
+OBJECT_X_MAX                EQU $11
+OBJECT_BITMAP_PTR_LO        EQU $12
+OBJECT_BITMAP_PTR_HI        EQU $13
+OBJECT_MAGIC_MODE           EQU $14
+OBJECT_VRAM_ADDR_LO         EQU $15
+OBJECT_VRAM_ADDR_HI         EQU $16
+OBJECT_COLOR                EQU $17
+OBJECT_ANIMATION_FRAME      EQU $18
+
+; $0A, $0B and $10 are touched only by whole-record clear/copy operations.
+; No constructor, updater, renderer or collision path reads or writes them as
+; fields, so they remain explicitly reserved rather than receiving speculative
+; meanings.
+
+BITMAP_SOURCE_WIDTH         EQU $00
+BITMAP_ROW_COUNT            EQU $01
+
+; OBJECT_FLAGS bits.  Bits 0-1 are unused by every object path in this ROM.
+; Collision state is deliberately split: bit 6 drives the hit animation while
+; bit 5 queues scoring/event processing for the foreground TERSE thread.
+OBJECT_FLAG_SCORE_PENDING   EQU $04            ; bit 2
+OBJECT_FLAG_HIT_SIDE        EQU $08            ; bit 3: 0 right, 1 left
+OBJECT_FLAG_AT_BOUNDARY     EQU $10            ; bit 4
+OBJECT_FLAG_HIT_PENDING     EQU $20            ; bit 5
+OBJECT_FLAG_HIT_ANIMATION   EQU $40            ; bit 6
+OBJECT_FLAG_ACTIVE          EQU $80            ; bit 7
+
+OBJECT_TYPE_MINE            EQU $06
+OBJECT_TYPE_TORPEDO         EQU $07
+OBJECT_TYPE_DIVE_TARGET     EQU $08
+
+; Scheduler pools contain record starts through the inclusive LAST address.
+; Torpedo records are interleaved by station; successive records for one
+; station are two records ($32 bytes) apart.
+TARGET_POOL_BASE            EQU $C000
+TARGET_POOL_LAST            EQU $C04B
+TARGET_POOL_COUNT           EQU $04
+MINE_POOL_BASE              EQU $C064
+MINE_POOL_LAST              EQU $C0E1
+MINE_POOL_COUNT             EQU $06
+TORPEDO_POOL_BASE           EQU $C0FA
+TORPEDO_POOL_LEFT_BASE      EQU $C0FA
+TORPEDO_POOL_RIGHT_BASE     EQU $C113
+TORPEDO_POOL_LAST           EQU $C1A9
+TORPEDO_POOL_COUNT          EQU $08
+TORPEDO_STATION_STRIDE      EQU $32
+
+TARGET_SCHEDULER_CURSOR     EQU $C1C2
+MINE_SCHEDULER_CURSOR       EQU $C1C4
+TORPEDO_SCHEDULER_CURSOR    EQU $C1C6
+
+TARGET_TYPE_SEQUENCE        EQU $0DC8
+TARGET_SPEED_TABLE          EQU $0DD2
+OBJECT_INITIAL_TEMPLATES    EQU $0DDB
+OBJECT_BITMAP_SET_TABLE     EQU $1AC3
+TORPEDO_COLLISION_LANE_TABLE EQU $1AD5
+TORPEDO_FRAME_Y_TABLE       EQU $1AE4
+
 ; Frame-timed discrete-sound producers.  The interrupt handler treats every
 ; nonzero byte as an asserted line and decrements the timers at 60 Hz.
 ; $C1D0-$C1D5 are packed in reverse address order onto port $40.
@@ -844,13 +925,13 @@ control_wait:           DW      TERSE_BEGIN
                         DW      $0735
 control_no_state:       DW      TERSE_INLINE_BFETCH,$C1FB
                         DW      TERSE_ZERO_BRANCH,control_no_player
-                        DW      $0AF4,PROCESS_SHIP_HIT,$0711,UPDATE_SONAR_SEQUENCE
+                        DW      ERASE_EXPIRED_HIT_SCORES,PROCESS_SHIP_HIT,$0711,UPDATE_SONAR_SEQUENCE
                         DW      TERSE_INLINE_BFETCH,$C1DF
                         DW      TERSE_BYTE_NOT
                         DW      TERSE_ZERO_BRANCH,control_continue
-                        DW      $07C4,$08A7,POLL_TORPEDO_FIRE
+                        DW      $07C4,ACTIVATE_TARGET_LANES,POLL_TORPEDO_FIRE
                         DW      TERSE_BRANCH,control_continue
-control_no_player:      DW      $0BDF,$0C1A
+control_no_player:      DW      INITIALIZE_OBJECT_POOLS,$0C1A
                         DW      TERSE_INLINE_BFETCH,$C206
                         DW      TERSE_ZERO_BRANCH,control_continue
                         DW      TERSE_TRUE
@@ -878,17 +959,103 @@ CLEAR_PLAYFIELD_AND_UPDATE_SCORE:
 ; $0613: Hit processing, score update and ready/reload lamp output
 ;-------------------------------------------------------------------------------
 PROCESS_SHIP_HIT:
-                        DB      $21,$00,$C0,$C5,$FD,$E5,$CB,$6E,$CA,$A6,$06,$CB,$AE,$CB,$5E,$11 ; $0613  !......n......^.
-                        DB      $E7,$C1,$3A,$F1,$C1,$0E,$43,$28,$08,$11,$E2,$C1,$3A,$EE,$C1,$0E ; $0623  ..:...C(....:...
-                        DB      $42,$23,$F6,$20,$ED,$79,$7E,$2B,$E5,$FD,$E1,$EB,$06,$03,$FE,$03 ; $0633  B#. .y~+........
-                        DB      $38,$0E,$06,$01,$FE,$05,$38,$08,$06,$05,$FE,$07,$38,$02,$06,$10 ; $0643  8.....8.....8...
-                        DB      $7E,$80,$27,$77,$23,$7E,$CE,$00,$27,$77,$23,$36,$00,$23,$34,$23 ; $0653  ~.'w#~..'w#6.#4#
-                        DB      $7E,$80,$27,$77,$FD,$7E,$17,$32,$02,$C2,$D5,$C5,$CD,$B5,$06,$C1 ; $0663  ~.'w.~.2........
-                        DB      $FD,$CB,$00,$D6,$FD,$7E,$0F,$32,$FF,$C1,$FD,$7E,$08,$D6,$1A,$32 ; $0673  .....~.2...~...2
-                        DB      $01,$C2,$21,$00,$00,$E5,$21,$30,$30,$E5,$78,$CD,$F0,$0C,$21,$00 ; $0683  ..!...!00.x...!.
-                        DB      $00,$39,$7E,$FE,$30,$20,$02,$36,$40,$CD,$E4,$15,$33,$33,$33,$33 ; $0693  .9~.0 .6 ...3333
-                        DB      $33,$33,$E1,$11,$19,$00,$19,$7D,$FE,$64,$C2,$19,$06,$FD,$E1,$C1 ; $06A3  33.....}.d......
-                        DB      $FD,$E9,$56,$2B,$7E,$FE,$04,$C0,$36,$00,$23,$36,$00,$2B,$2B,$2B ; $06B3  ..V+~...6.#6.+++
+; Walk the four moving-target records and consume collision-event bit 5.  Bit 3
+; identifies the station that fired the successful torpedo.  Collision-event
+; and hit-animation state are independent so scoring runs once while animation
+; continues in the interrupt scheduler.
+                        LD      HL,TARGET_POOL_BASE
+                        PUSH    BC
+                        PUSH    IY
+process_target_hit:     BIT     5,(HL)
+                        JP      Z,next_target_hit
+                        RES     5,(HL)
+                        BIT     3,(HL)
+                        LD      DE,$C1E7
+                        LD      A,($C1F1)
+                        LD      C,PORT_RIGHT_LAMPS
+                        JR      Z,hit_station_selected
+                        LD      DE,$C1E2
+                        LD      A,($C1EE)
+                        LD      C,PORT_LEFT_LAMPS
+hit_station_selected:   INC     HL                      ; OBJECT_TYPE
+                        OR      $20
+                        OUT     (C),A
+                        LD      A,(HL)
+                        DEC     HL
+                        PUSH    HL
+                        POP     IY
+                        EX      DE,HL
+
+; Convert target type to the BCD score increment used by this record.
+                        LD      B,$03
+                        CP      $03
+                        JR      C,hit_score_value_ready
+                        LD      B,$01
+                        CP      $05
+                        JR      C,hit_score_value_ready
+                        LD      B,$05
+                        CP      $07
+                        JR      C,hit_score_value_ready
+                        LD      B,$10
+hit_score_value_ready:  LD      A,(HL)
+                        ADD     A,B
+                        DAA
+                        LD      (HL),A
+                        INC     HL
+                        LD      A,(HL)
+                        ADC     A,$00
+                        DAA
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),$00
+                        INC     HL
+                        INC     (HL)
+                        INC     HL
+                        LD      A,(HL)
+                        ADD     A,B
+                        DAA
+                        LD      (HL),A
+                        LD      A,(IY+OBJECT_COLOR)
+                        LD      ($C202),A
+                        PUSH    DE
+                        PUSH    BC
+                        CALL    $06B5
+                        POP     BC
+                        SET     2,(IY+OBJECT_FLAGS)
+                        LD      A,(IY+OBJECT_X_POSITION_HI)
+                        LD      ($C1FF),A
+                        LD      A,(IY+OBJECT_Y_POSITION_HI)
+                        SUB     $1A
+                        LD      ($C201),A
+                        LD      HL,$0000
+                        PUSH    HL
+                        LD      HL,$3030
+                        PUSH    HL
+                        LD      A,B
+                        CALL    $0CF0
+                        LD      HL,$0000
+                        ADD     HL,SP
+                        LD      A,(HL)
+                        CP      $30
+                        JR      NZ,draw_hit_score
+                        LD      (HL),$40
+draw_hit_score:         CALL    DRAW_TEXT
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        POP     HL
+next_target_hit:        LD      DE,OBJECT_RECORD_SIZE
+                        ADD     HL,DE
+                        LD      A,L
+                        CP      $64
+                        JP      NZ,process_target_hit
+                        POP     IY
+                        POP     BC
+                        JP      (IY)
+                        DB      $56,$2B,$7E,$FE,$04,$C0,$36,$00,$23,$36,$00,$2B,$2B,$2B ; $06B5
                         DB      $2B,$7E,$82,$27,$77,$23,$7E,$CE,$00,$27,$77,$7D,$5D,$FE,$E3,$3E ; $06C3  +~.'w#~..'w}]..>
                         DB      $78,$21,$F2,$C1,$01,$CE,$C1,$20,$08,$3E,$00,$21,$F4,$C1,$01,$CF ; $06D3  x!..... .>.!....
                         DB      $C1,$36,$3C,$23,$72,$32,$FF,$C1,$3E,$96,$32,$01,$C2,$3E,$78,$02 ; $06E3  .6<#r2..>.2..>x.
@@ -920,36 +1087,239 @@ CLEAR_PLAYER_LAMPS:
                         DB      $21,$DC,$C1,$BE,$CA,$FC,$07,$77,$F5,$C5,$21,$00,$00,$E5,$CD,$F0 ; $07C7  !......w..!.....
                         DB      $0C,$21,$00,$00,$39,$3E,$BE,$32,$01,$C2,$3E,$4C,$32,$FF,$C1,$3E ; $07D7  .!..9>.2..>L2..>
                         DB      $0C,$32,$02,$C2,$CD,$E4,$15,$33,$33,$33,$33,$C1,$F1,$B7,$20,$05 ; $07E7  .2.....3333... .
-                        DB      $3E,$FF,$32,$DF,$C1,$C5,$0E,$42,$11,$CB,$C1,$21,$ED,$C1,$3A,$FB ; $07F7  >.2....B...!..:.
-                        DB      $C1,$FE,$02,$CC,$18,$08,$0C,$13,$21,$F0,$C1,$CD,$18,$08,$C1,$FD ; $0807  ........!.......
-                        DB      $E9,$7E,$B7,$C0,$1A,$B7,$C0,$36,$04,$3E,$1F,$ED,$79,$FD,$E5,$D9 ; $0817  .~.....6.>..y...
-                        DB      $3A,$E2,$C1,$57,$3A,$E7,$C1,$BA,$30,$01,$7A,$FE,$10,$38,$14,$FE ; $0827  :..W:...0.z..8..
-                        DB      $20,$38,$08,$21,$C8,$C0,$16,$82,$CD,$56,$08,$21,$96,$C0,$16,$64 ; $0837   8.!.....V.!...d
-                        DB      $CD,$56,$08,$21,$64,$C0,$16,$4C,$CD,$56,$08,$D9,$FD,$E1,$C9,$CB ; $0847  .V.!d..L.V......
-                        DB      $7E,$20,$0E,$E5,$FD,$E1,$CD,$9F,$08,$FD,$7E,$28,$C6,$1E,$C3,$78 ; $0857  ~ ........~(...x
-                        DB      $08,$01,$19,$00,$09,$CB,$7E,$C0,$E5,$FD,$E1,$CD,$9F,$08,$FD,$7E ; $0867  ......~........~
-                        DB      $F6,$C6,$50,$FE,$A0,$38,$02,$D6,$A0,$FD,$77,$0F,$FD,$72,$08,$FD ; $0877  ..P..8....w..r..
-                        DB      $36,$01,$06,$FD,$36,$0C,$80,$FD,$36,$11,$A0,$FD,$36,$14,$08,$FD ; $0887  6...6...6...6...
-                        DB      $36,$17,$0C,$FD,$36,$00,$80,$C9,$06,$19,$AF,$77,$23,$10,$FC,$C9 ; $0897  6...6......w#...
-                        DB      $FD,$E5,$D9,$21,$00,$C0,$CD,$BB,$08,$21,$32,$C0,$CD,$BB,$08,$FD ; $08A7  ...!.....!2.....
-                        DB      $E1,$D9,$FD,$E9,$E5,$FD,$E1,$FD,$CB,$19,$7E,$C0,$CB,$7E,$20,$05 ; $08B7  ..........~..~ .
-                        DB      $ED,$5F,$0F,$18,$1C,$FD,$7E,$0D,$17,$FD,$7E,$0F,$38,$06,$FE,$80 ; $08C7  ._....~...~.8...
-                        DB      $D8,$B7,$18,$04,$FE,$20,$D0,$37,$F5,$11,$19,$00,$19,$E5,$FD,$E1 ; $08D7  ..... .7........
-                        DB      $F1,$F5,$CD,$9F,$08,$ED,$5F,$1F,$3E,$04,$38,$02,$3E,$08,$FD,$77 ; $08E7  ......_.>.8.>..w
-                        DB      $17,$7D,$FE,$33,$3E,$1A,$38,$02,$3E,$33,$FD,$77,$08,$2A,$0B,$C2 ; $08F7  .}.3>.8.>3.w.*..
-                        DB      $46,$23,$7E,$FE,$FF,$20,$03,$21,$C8,$0D,$22,$0B,$C2,$78,$FE,$03 ; $0907  F#~.. .!.."..x..
-                        DB      $20,$19,$3A,$DB,$C1,$FE,$24,$3E,$03,$30,$10,$3A,$F7,$C1,$FE,$02 ; $0917   .:...$>.0.:....
-                        DB      $28,$09,$3C,$32,$F7,$C1,$CD,$02,$0D,$3E,$08,$FD,$77,$01,$FD,$36 ; $0927  (.<2.....>..w..6
-                        DB      $14,$08,$21,$D2,$0D,$5F,$16,$00,$19,$7E,$1E,$00,$CB,$27,$CB,$13 ; $0937  ..!.._...~...'..
-                        DB      $CB,$27,$CB,$13,$FD,$77,$0C,$FD,$73,$0D,$FD,$7E,$01,$FE,$05,$3E ; $0947  .'...w..s..~...>
-                        DB      $8E,$20,$02,$3E,$9A,$FD,$77,$11,$F1,$30,$28,$FD,$36,$11,$A0,$FD ; $0957  . .>..w..0(.6...
-                        DB      $CB,$14,$F6,$FD,$46,$0D,$FD,$7E,$0C,$2F,$4F,$78,$2F,$47,$03,$FD ; $0967  ....F..~./Ox/G..
-                        DB      $71,$0C,$FD,$70,$0D,$FD,$7E,$01,$FE,$05,$3E,$96,$28,$02,$3E,$8C ; $0977  q..p..~...>.(.>.
-                        LD      (IY+$0F),A
-                        LD      A,(IY+$01)
+                        DB      $3E,$FF,$32,$DF,$C1     ; $07F7
+
+; Service the left station only in two-player mode; the right station is always
+; present.  Each station has its own magazine byte, reload timer and lamp port.
+SERVICE_STATION_RELOADS:
+                        PUSH    BC
+                        LD      C,PORT_LEFT_LAMPS
+                        LD      DE,$C1CB
+                        LD      HL,$C1ED
+                        LD      A,($C1FB)
+                        CP      $02
+                        CALL    Z,RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES
+                        INC     C
+                        INC     DE
+                        LD      HL,$C1F0
+                        CALL    RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES
+                        POP     BC
+                        JP      (IY)
+
+;-------------------------------------------------------------------------------
+; $0818: Reload one station and activate its score-qualified mine lanes
+;-------------------------------------------------------------------------------
+; HL is the station's remaining-torpedo count, DE its reload timer, and C its
+; lamp port.  Once both state bytes reach zero, the magazine returns to four
+; shots and the larger player score controls whether one, two, or all three
+; two-record mine lanes are populated.
+RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES:
+                        LD      A,(HL)
+                        OR      A
+                        RET     NZ
+                        LD      A,(DE)
+                        OR      A
+                        RET     NZ
+                        LD      (HL),$04
+                        LD      A,$1F
+                        OUT     (C),A
+                        PUSH    IY
+                        EXX
+                        LD      A,($C1E2)
+                        LD      D,A
+                        LD      A,($C1E7)
+                        CP      D
+                        JR      NC,mine_score_selected
+                        LD      A,D
+mine_score_selected:    CP      $10
+                        JR      C,spawn_near_mine_lane
+                        CP      $20
+                        JR      C,spawn_middle_mine_lane
+                        LD      HL,$C0C8
+                        LD      D,$82
+                        CALL    ACTIVATE_MINE_IN_LANE
+spawn_middle_mine_lane: LD      HL,$C096
+                        LD      D,$64
+                        CALL    ACTIVATE_MINE_IN_LANE
+spawn_near_mine_lane:   LD      HL,MINE_POOL_BASE
+                        LD      D,$4C
+                        CALL    ACTIVATE_MINE_IN_LANE
+                        EXX
+                        POP     IY
+                        RET
+
+; HL addresses the first of two records in one mine lane; D is the fixed Y
+; coordinate.  Allocate the first inactive record and stagger its X coordinate
+; from the other mine in the lane.
+ACTIVATE_MINE_IN_LANE:  BIT     7,(HL)
+                        JR      NZ,try_second_mine_slot
+                        PUSH    HL
+                        POP     IY
+                        CALL    CLEAR_OBJECT_RECORD
+                        LD      A,(IY+$28)             ; second record X position
+                        ADD     A,$1E
+                        JP      set_new_mine_position
+try_second_mine_slot:   LD      BC,OBJECT_RECORD_SIZE
+                        ADD     HL,BC
+                        BIT     7,(HL)
+                        RET     NZ
+                        PUSH    HL
+                        POP     IY
+                        CALL    CLEAR_OBJECT_RECORD
+                        LD      A,(IY-$0A)             ; first record X position
+set_new_mine_position:  ADD     A,$50
+                        CP      $A0
+                        JR      C,mine_x_ready
+                        SUB     $A0
+mine_x_ready:           LD      (IY+OBJECT_X_POSITION_HI),A
+                        LD      (IY+OBJECT_Y_POSITION_HI),D
+                        LD      (IY+OBJECT_TYPE),OBJECT_TYPE_MINE
+                        LD      (IY+OBJECT_X_VELOCITY_LO),$80
+                        LD      (IY+OBJECT_X_MAX),$A0
+                        LD      (IY+OBJECT_MAGIC_MODE),$08
+                        LD      (IY+OBJECT_COLOR),$0C
+                        LD      (IY+OBJECT_FLAGS),OBJECT_FLAG_ACTIVE
+                        RET
+
+; Zero one complete object record.  HL returns one byte past the record.
+CLEAR_OBJECT_RECORD:    LD      B,OBJECT_RECORD_SIZE
+                        XOR     A
+clear_object_byte:      LD      (HL),A
+                        INC     HL
+                        DJNZ    clear_object_byte
+                        RET
+;-------------------------------------------------------------------------------
+; $08A7: Populate the two moving-target lanes
+;-------------------------------------------------------------------------------
+ACTIVATE_TARGET_LANES:  PUSH    IY
+                        EXX
+                        LD      HL,TARGET_POOL_BASE
+                        CALL    ACTIVATE_TARGET_IN_LANE
+                        LD      HL,$C032
+                        CALL    ACTIVATE_TARGET_IN_LANE
+                        POP     IY
+                        EXX
+                        JP      (IY)
+
+; HL addresses the first record in a two-record target lane.  The second target
+; is launched only after the first has crossed the lane's spawn threshold.
+ACTIVATE_TARGET_IN_LANE:
+                        PUSH    HL
+                        POP     IY
+                        BIT     7,(IY+OBJECT_RECORD_SIZE)
+                        RET     NZ
+                        BIT     7,(HL)
+                        JR      NZ,derive_target_direction
+                        LD      A,R
+                        RRCA
+                        JR      target_slot_selected
+derive_target_direction:
+                        LD      A,(IY+OBJECT_X_VELOCITY_HI)
+                        RLA
+                        LD      A,(IY+OBJECT_X_POSITION_HI)
+                        JR      C,target_moving_left
+                        CP      $80
+                        RET     C
+                        OR      A                       ; carry clear: move right
+                        JR      allocate_second_target
+target_moving_left:     CP      $20
+                        RET     NC
+                        SCF                             ; carry set: move left
+allocate_second_target:
+                        PUSH    AF
+                        LD      DE,OBJECT_RECORD_SIZE
+                        ADD     HL,DE
+                        PUSH    HL
+                        POP     IY
+                        POP     AF
+target_slot_selected:   PUSH    AF
+                        CALL    CLEAR_OBJECT_RECORD
+                        LD      A,R
+                        RRA
+                        LD      A,$04
+                        JR      C,target_color_ready
+                        LD      A,$08
+target_color_ready:     LD      (IY+OBJECT_COLOR),A
+                        LD      A,L
+                        CP      $33
+                        LD      A,$1A
+                        JR      C,target_lane_y_ready
+                        LD      A,$33
+target_lane_y_ready:    LD      (IY+OBJECT_Y_POSITION_HI),A
+
+; TARGET_TYPE_SEQUENCE supplies normal target types.  Type $03 can be promoted
+; to the special diving target while its progression counter is below two.
+                        LD      HL,($C20B)
+                        LD      B,(HL)
+                        INC     HL
+                        LD      A,(HL)
+                        CP      $FF
+                        JR      NZ,target_sequence_ready
+                        LD      HL,TARGET_TYPE_SEQUENCE
+target_sequence_ready:  LD      ($C20B),HL
+                        LD      A,B
+                        CP      $03
+                        JR      NZ,target_type_ready
+                        LD      A,($C1DB)
+                        CP      $24
+                        LD      A,$03
+                        JR      NC,target_type_ready
+                        LD      A,($C1F7)
+                        CP      $02
+                        JR      Z,target_type_ready
+                        INC     A
+                        LD      ($C1F7),A
+                        CALL    $0D02
+                        LD      A,OBJECT_TYPE_DIVE_TARGET
+target_type_ready:      LD      (IY+OBJECT_TYPE),A
+                        LD      (IY+OBJECT_MAGIC_MODE),$08
+
+; Convert the type's signed byte speed to 8.8 fixed point by multiplying by
+; four.  Carry saved on entry selects leftward or rightward travel.
+                        LD      HL,TARGET_SPEED_TABLE
+                        LD      E,A
+                        LD      D,$00
+                        ADD     HL,DE
+                        LD      A,(HL)
+                        LD      E,$00
+                        SLA     A
+                        RL      E
+                        SLA     A
+                        RL      E
+                        LD      (IY+OBJECT_X_VELOCITY_LO),A
+                        LD      (IY+OBJECT_X_VELOCITY_HI),E
+                        LD      A,(IY+OBJECT_TYPE)
+                        CP      $05
+                        LD      A,$8E
+                        JR      NZ,target_right_limit_ready
+                        LD      A,$9A
+target_right_limit_ready:
+                        LD      (IY+OBJECT_X_MAX),A
+                        POP     AF
+                        JR      NC,target_direction_ready
+                        LD      (IY+OBJECT_X_MAX),$A0
+                        SET     6,(IY+OBJECT_MAGIC_MODE)
+                        LD      B,(IY+OBJECT_X_VELOCITY_HI)
+                        LD      A,(IY+OBJECT_X_VELOCITY_LO)
+                        CPL
+                        LD      C,A
+                        LD      A,B
+                        CPL
+                        LD      B,A
+                        INC     BC
+                        LD      (IY+OBJECT_X_VELOCITY_LO),C
+                        LD      (IY+OBJECT_X_VELOCITY_HI),B
+                        LD      A,(IY+OBJECT_TYPE)
+                        CP      $05
+                        LD      A,$96
+                        JR      Z,target_left_start_ready
+                        LD      A,$8C
+target_left_start_ready:
+                        LD      (IY+OBJECT_X_POSITION_HI),A
+target_direction_ready: LD      A,(IY+OBJECT_TYPE)
                         CP      $05
                         JR      C,target_sound_done
-                        CP      $08
+                        CP      OBJECT_TYPE_DIVE_TARGET
                         JR      NZ,START_SONAR_SEQUENCE
 
 ; Target type $08 begins the dive effect.  $F0 supplies both the descending
@@ -957,12 +1327,12 @@ CLEAR_PLAYER_LAMPS:
 START_DIVE_SOUND:
                         LD      A,$F0
                         LD      (SOUND_DIVE_PAN_TIMER),A
-                        BIT     6,(IY+$14)
+                        BIT     6,(IY+OBJECT_MAGIC_MODE)
                         LD      A,$87
                         JR      Z,dive_pan_selected
                         LD      A,$80
 dive_pan_selected:      LD      (SOUND_DIVE_PAN_XOR),A
-                        LD      (IY+$17),$0C
+                        LD      (IY+OBJECT_COLOR),$0C
                         JR      target_sound_done
 
 ; Other target types start a ten-ping alternating sonar sequence.  The first
@@ -975,7 +1345,7 @@ TRIGGER_INITIAL_LEFT_SONAR:
                         LD      (SOUND_LEFT_SONAR_TIMER),A
                         LD      A,$0A
                         LD      (SONAR_PING_COUNT),A
-target_sound_done:      LD      (IY+$00),$80
+target_sound_done:      LD      (IY+OBJECT_FLAGS),OBJECT_FLAG_ACTIVE
                         RET
 
 ;-------------------------------------------------------------------------------
@@ -990,12 +1360,12 @@ POLL_TORPEDO_FIRE:
                         LD      C,PORT_P2_HANDLE
                         LD      DE,$C1CB
                         LD      HL,$C1ED
-                        LD      IY,$C0FA
+                        LD      IY,TORPEDO_POOL_LEFT_BASE
                         CALL    UPDATE_PLAYER_TORPEDO_FIRE
 poll_right_torpedo:     LD      C,PORT_P1_HANDLE
                         LD      DE,$C1CC
                         LD      HL,$C1F0
-                        LD      IY,$C113
+                        LD      IY,TORPEDO_POOL_RIGHT_BASE
                         CALL    UPDATE_PLAYER_TORPEDO_FIRE
                         POP     IY
                         POP     BC
@@ -1044,7 +1414,7 @@ torpedo_slot_selected:  INC     HL
                         OR      A
                         LD      HL,$0000
                         JR      Z,torpedo_record_selected
-                        LD      DE,$0032
+                        LD      DE,TORPEDO_STATION_STRIDE
 torpedo_record_offset:  ADD     HL,DE
                         DEC     A
                         JR      NZ,torpedo_record_offset
@@ -1075,14 +1445,14 @@ torpedo_trajectory_table:
                         LD      D,$00
                         ADD     HL,DE
                         LD      A,(HL)
-                        LD      (IY+$0F),A
+                        LD      (IY+OBJECT_X_POSITION_HI),A
                         INC     HL
                         LD      A,(HL)
-                        LD      (IY+$0C),A
+                        LD      (IY+OBJECT_X_VELOCITY_LO),A
                         RLCA
                         JR      NC,torpedo_velocity_ready
-                        LD      (IY+$0D),$FF
-torpedo_velocity_ready: LD      (IY+$00),$80
+                        LD      (IY+OBJECT_X_VELOCITY_HI),$FF
+torpedo_velocity_ready: LD      (IY+OBJECT_FLAGS),OBJECT_FLAG_ACTIVE
 
 ; Port $10 is the left station and port $11 is the right station in the sound
 ; wiring.  A new torpedo holds its corresponding trigger high for $38 frames.
@@ -1095,21 +1465,21 @@ torpedo_sound_selected: LD      (HL),$38
                         RET
 
 INITIALIZE_TORPEDO_OBJECT:
-                        CALL    $089F
-                        LD      (IY+$01),$07
-                        LD      (IY+$03),$0C
-                        LD      (IY+$06),$FC
-                        LD      (IY+$08),$BB
-                        LD      (IY+$09),$23
-                        LD      (IY+$11),$9C
-                        LD      (IY+$14),$08
-                        LD      (IY+$13),$11
-                        LD      (IY+$12),$2D
+                        CALL    CLEAR_OBJECT_RECORD
+                        LD      (IY+OBJECT_TYPE),OBJECT_TYPE_TORPEDO
+                        LD      (IY+OBJECT_Y_ACCEL_LO),$0C
+                        LD      (IY+OBJECT_Y_VELOCITY_HI),$FC
+                        LD      (IY+OBJECT_Y_POSITION_HI),$BB
+                        LD      (IY+OBJECT_Y_MIN),$23
+                        LD      (IY+OBJECT_X_MAX),$9C
+                        LD      (IY+OBJECT_MAGIC_MODE),$08
+                        LD      (IY+OBJECT_BITMAP_PTR_HI),$11
+                        LD      (IY+OBJECT_BITMAP_PTR_LO),$2D
                         LD      A,$08
                         BIT     0,C
                         JR      Z,torpedo_color_selected
                         LD      A,$04
-torpedo_color_selected: LD      (IY+$17),A
+torpedo_color_selected: LD      (IY+OBJECT_COLOR),A
                         RET
 
 DECODE_HANDLE_POSITION:
@@ -1166,13 +1536,52 @@ TRIGGER_LEFT_SONAR:     LD      A,$04
                         LD      (SOUND_LEFT_SONAR_TIMER),A
                         LD      (HL),$10
 sonar_update_done:      JP      (IY)
-                        DB      $C5,$FD,$E5             ; $0AF4
-                        DB      $FD,$21,$00,$C0,$11,$19,$00,$06,$04,$FD,$CB,$00,$56,$28,$42,$FD ; $0AF7  .!..........V(B.
-                        DB      $7E,$01,$FE,$08,$3E,$04,$28,$02,$3E,$02,$FD,$BE,$18,$30,$32,$FD ; $0B07  ~...>.(.>....02.
-                        DB      $CB,$00,$96,$C5,$D5,$FD,$7E,$0F,$32,$FF,$C1,$FD,$7E,$08,$D6,$1A ; $0B17  ......~.2...~...
-                        DB      $32,$01,$C2,$AF,$32,$02,$C2,$21,$6B,$13,$CD,$E4,$15,$FD,$CB,$00 ; $0B27  2...2..!k.......
-                        DB      $5E,$3A,$F1,$C1,$0E,$43,$28,$05,$3A,$EE,$C1,$0E,$42,$ED,$79,$D1 ; $0B37  ^:...C(.:...B.y.
-                        DB      $C1,$FD,$19,$10,$B4,$21,$F2,$C1,$11,$CE,$C1,$01,$1C,$6F,$CD,$C4 ; $0B47  .....!.......o..
+;-------------------------------------------------------------------------------
+; $0AF4: Retire target-hit score overlays after the explosion advances
+;-------------------------------------------------------------------------------
+; PROCESS_SHIP_HIT sets bit 2 after drawing a score beside the struck target.
+; The overlay survives through two animation frames, or four for the diving
+; target, before this pass erases it and restores the owning station's lamps.
+ERASE_EXPIRED_HIT_SCORES:
+                        PUSH    BC
+                        PUSH    IY
+                        LD      IY,TARGET_POOL_BASE
+                        LD      DE,OBJECT_RECORD_SIZE
+                        LD      B,TARGET_POOL_COUNT
+erase_hit_score_loop:   BIT     2,(IY+OBJECT_FLAGS)
+                        JR      Z,next_hit_score_record
+                        LD      A,(IY+OBJECT_TYPE)
+                        CP      OBJECT_TYPE_DIVE_TARGET
+                        LD      A,$04
+                        JR      Z,hit_score_frame_limit_ready
+                        LD      A,$02
+hit_score_frame_limit_ready:
+                        CP      (IY+OBJECT_ANIMATION_FRAME)
+                        JR      NC,next_hit_score_record
+                        RES     2,(IY+OBJECT_FLAGS)
+                        PUSH    BC
+                        PUSH    DE
+                        LD      A,(IY+OBJECT_X_POSITION_HI)
+                        LD      ($C1FF),A
+                        LD      A,(IY+OBJECT_Y_POSITION_HI)
+                        SUB     $1A
+                        LD      ($C201),A
+                        XOR     A
+                        LD      ($C202),A
+                        LD      HL,$136B               ; blank score overlay
+                        CALL    DRAW_TEXT
+                        BIT     3,(IY+OBJECT_FLAGS)
+                        LD      A,($C1F1)
+                        LD      C,PORT_RIGHT_LAMPS
+                        JR      Z,restore_hit_lamps
+                        LD      A,($C1EE)
+                        LD      C,PORT_LEFT_LAMPS
+restore_hit_lamps:      OUT     (C),A
+                        POP     DE
+                        POP     BC
+next_hit_score_record:  ADD     IY,DE
+                        DJNZ    erase_hit_score_loop
+                        DB      $21,$F2,$C1,$11,$CE,$C1,$01,$1C,$6F,$CD,$C4 ; $0B4C
                         DB      $0B,$21,$F4,$C1,$11,$CF,$C1,$01,$E0,$6E,$CD,$C4,$0B,$3E,$96,$32 ; $0B57  .!.......n...>.2
                         DB      $01,$C2,$3E,$00,$32,$FF,$C1,$3E,$08,$32,$02,$C2,$21,$53,$1B,$3A ; $0B67  ..>.2..>.2..!S.:
                         DB      $F4,$C1,$B7,$C4,$D7,$15,$3E,$78,$32,$FF,$C1,$3E,$04,$32,$02,$C2 ; $0B77  ......>x2..>.2..
@@ -1181,11 +1590,45 @@ sonar_update_done:      JP      (IY)
                         DB      $0C,$3E,$08,$32,$02,$C2,$3E,$07,$32,$FF,$C1,$3A,$F5,$C1,$4F,$06 ; $0BA7  .>.2..>.2..:..O.
                         DB      $00,$3A,$F4,$C1,$B7,$C4,$AE,$0C,$FD,$E1,$C1,$FD,$E9,$7E,$B7,$C8 ; $0BB7  .:...........~..
                         DB      $1A,$B7,$C0,$36,$00,$60,$69,$11,$3C,$00,$AF,$0E,$20,$06,$14,$77 ; $0BC7  ...6.`i.<... ..w
-                        DB      $23,$10,$FC,$19,$0D,$20,$F6,$C9,$3A,$00,$C0,$CB,$7F,$20,$32,$3A ; $0BD7  #.... ..:.... 2:
-                        DB      $32,$C0,$CB,$7F,$20,$2B,$C5,$21,$DB,$0D,$11,$00,$C0,$01,$19,$00 ; $0BE7  2... +.!........
-                        DB      $C5,$ED,$B0,$C1,$EB,$09,$EB,$C5,$ED,$B0,$C1,$11,$FA,$C0,$CB,$21 ; $0BF7  ...............!
-                        DB      $ED,$B0,$3E,$80,$32,$00,$C0,$32,$32,$C0,$32,$FA,$C0,$32,$13,$C1 ; $0C07  ..>.2..22.2..2..
-                        DB      $C1,$FD,$E9,$C5,$3A,$F8,$C1,$B7,$28,$32,$21,$CC,$C1,$7E,$B7,$20 ; $0C17  ....:...(2!..~.
+                        DB      $23,$10,$FC,$19,$0D,$20,$F6,$C9 ; $0BD7
+
+;-------------------------------------------------------------------------------
+; $0BDF: Seed the target and interleaved torpedo pools from ROM templates
+;-------------------------------------------------------------------------------
+; Records 0 and 2 of the four-record target pool receive distinct templates;
+; records 1 and 3 remain available as their trailing lane partners.  The next
+; two templates initialize the first left/right torpedo records at $C0FA/$C113.
+INITIALIZE_OBJECT_POOLS:
+                        LD      A,(TARGET_POOL_BASE+OBJECT_FLAGS)
+                        BIT     7,A
+                        JR      NZ,object_pools_ready
+                        LD      A,($C032+OBJECT_FLAGS)
+                        BIT     7,A
+                        JR      NZ,object_pools_ready
+                        PUSH    BC
+                        LD      HL,OBJECT_INITIAL_TEMPLATES
+                        LD      DE,TARGET_POOL_BASE
+                        LD      BC,OBJECT_RECORD_SIZE
+                        PUSH    BC
+                        LDIR
+                        POP     BC
+                        EX      DE,HL
+                        ADD     HL,BC                   ; leave target record 1 free
+                        EX      DE,HL
+                        PUSH    BC
+                        LDIR
+                        POP     BC
+                        LD      DE,TORPEDO_POOL_BASE
+                        SLA     C                       ; two adjacent templates
+                        LDIR
+                        LD      A,OBJECT_FLAG_ACTIVE
+                        LD      (TARGET_POOL_BASE+OBJECT_FLAGS),A
+                        LD      ($C032+OBJECT_FLAGS),A
+                        LD      (TORPEDO_POOL_LEFT_BASE+OBJECT_FLAGS),A
+                        LD      (TORPEDO_POOL_RIGHT_BASE+OBJECT_FLAGS),A
+                        POP     BC
+object_pools_ready:     JP      (IY)
+                        DB      $C5,$3A,$F8,$C1,$B7,$28,$32,$21,$CC,$C1,$7E,$B7,$20 ; $0C1A
                         DB      $2B,$36,$1E,$3E,$02,$32,$01,$C2,$3E,$0A,$32,$FF,$C1,$3A,$02,$C2 ; $0C27  +6.>.2..>.2..:..
                         DB      $EE,$0C,$32,$02,$C2,$21,$E7,$1A,$3A,$05,$C2,$FE,$00,$28,$0A,$21 ; $0C37  ..2..!..:....(.!
                         DB      $F7,$1A,$FE,$01,$28,$03,$21,$07,$1B,$CD,$E4,$15,$C1,$FD,$E9     ; $0C47
@@ -1414,13 +1857,16 @@ pack_port41_timer:      CP      (HL)
 dive_trigger_ready:     XOR     (HL)
                         OR      C
                         OUT     (PORT_SOUND_CONTROL),A
-                        CALL    $1717
-                        CALL    $1717
-                        CALL    $1733
-                        CALL    $1733
-                        CALL    $1733
-                        CALL    $1733
-                        CALL    $174A
+; Round-robin workload per service pass: two of four targets, four of eight
+; torpedoes, and one of six mines.  Persistent cursors cover each complete pool
+; across subsequent interrupts without scanning inactive records linearly.
+                        CALL    SERVICE_TARGET_POOL
+                        CALL    SERVICE_TARGET_POOL
+                        CALL    SERVICE_TORPEDO_POOL
+                        CALL    SERVICE_TORPEDO_POOL
+                        CALL    SERVICE_TORPEDO_POOL
+                        CALL    SERVICE_TORPEDO_POOL
+                        CALL    SERVICE_MINE_POOL
                         LD      HL,SOUND_FRAME_DIVIDER
                         DEC     (HL)
                         LD      A,(HL)
@@ -1477,21 +1923,147 @@ save_coin_input:        POP     AF
                         RET
                         DB      $08,$E3,$E3,$00,$00,$00 ; $1448
                         DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$D3,$04,$08,$F5,$E5,$CD,$66 ; $144E  ...............f
-                        DB      $17,$E1,$F1,$FB,$C9,$DD,$CB,$00,$76,$C2,$DA,$17,$CD,$71,$19,$DD ; $145E  ........v....q..
-                        DB      $CB,$00,$66,$20,$26,$DD,$7E,$01,$FE,$08,$20,$18,$DD,$34,$02,$DD ; $146E  ..f &.~... ..4..
-                        DB      $7E,$02,$FE,$2A,$38,$0E,$DD,$36,$02,$00,$DD,$7E,$18,$FE,$02,$30 ; $147E  ~..*8..6...~...0
-                        DB      $03,$DD,$34,$18,$CD,$33,$18,$CD,$56,$18,$C9,$CD,$0A,$18,$DD,$CB ; $148E  ..4..3..V.......
-                        DB      $00,$BE,$C9,$DD,$E5,$E1,$CB,$45,$21,$EA,$C1,$20,$03,$21,$E5,$C1 ; $149E  .......E!.. .!..
-                        DB      $36,$00,$23,$36,$00,$C9,$21,$2D,$11,$DD,$74,$13,$DD,$75,$12,$DD ; $14AE  6.#6..!-..t..u..
-                        DB      $66,$16,$DD,$6E,$15,$E5,$CD,$71,$19,$DD,$CB,$00,$66,$F5,$C4,$A1 ; $14BE  f..n...q....f...
-                        DB      $14,$F1,$F5,$CC,$3C,$19,$F1,$E1,$20,$C1,$7C,$B5,$CA,$92,$15,$11 ; $14CE  ....<... .|.....
-                        DB      $60,$3F,$19,$7E,$23,$B6,$11,$4F,$00,$19,$B6,$23,$B6,$11,$EF,$00 ; $14DE  `?.~#..O...#....
-                        DB      $47,$19,$B6,$11,$50,$00,$19,$B6,$19,$B6,$E6,$C0,$B0,$CA,$92,$15 ; $14EE  G...P...........
-                        DB      $CD,$0A,$18,$DD,$7E,$08,$06,$05,$21,$D5,$1A,$BE,$30,$05,$23,$23 ; $14FE  ....~...!...0.##
-                        DB      $23,$10,$F8,$48,$23,$5E,$23,$56,$D5,$FD,$E1,$06,$02,$FD,$CB,$00 ; $150E  #..H#^#V........
-                        DB      $7E,$28,$69,$DD,$7E,$0F,$C6,$04,$FD,$96,$0F,$38,$5F,$FD,$66,$13 ; $151E  ~(i.~......8_.f.
-                        DB      $FD,$6E,$12,$56,$14,$CB,$22,$CB,$22,$BA,$30,$50,$FD,$CB,$00,$76 ; $152E  .n.V..".".0P...v
-                        DB      $20,$4A,$AF,$FD,$77,$02,$FD,$CB,$00,$F6,$FD,$CB,$00,$EE ; $153E
+                        DB      $17,$E1,$F1,$FB,$C9     ; $145E, interrupt tail
+
+;-------------------------------------------------------------------------------
+; $1463: Update one moving target from the four-record target pool
+;-------------------------------------------------------------------------------
+UPDATE_TARGET_OBJECT:   BIT     6,(IX+OBJECT_FLAGS)
+                        JP      NZ,ADVANCE_OBJECT_HIT_ANIMATION
+                        CALL    INTEGRATE_OBJECT_MOTION
+                        BIT     4,(IX+OBJECT_FLAGS)
+                        JR      NZ,ERASE_AND_DEACTIVATE_OBJECT
+
+; The diving target advances its first two frames on a 42-tick cadence.  Other
+; target types retain the animation frame selected by their state path.
+                        LD      A,(IX+OBJECT_TYPE)
+                        CP      OBJECT_TYPE_DIVE_TARGET
+                        JR      NZ,target_bitmap_ready
+                        INC     (IX+OBJECT_TIMER)
+                        LD      A,(IX+OBJECT_TIMER)
+                        CP      $2A
+                        JR      C,target_bitmap_ready
+                        LD      (IX+OBJECT_TIMER),$00
+                        LD      A,(IX+OBJECT_ANIMATION_FRAME)
+                        CP      $02
+                        JR      NC,target_bitmap_ready
+                        INC     (IX+OBJECT_ANIMATION_FRAME)
+target_bitmap_ready:    CALL    SELECT_OBJECT_BITMAP
+                        CALL    DRAW_OBJECT_BITMAP
+                        RET
+
+ERASE_AND_DEACTIVATE_OBJECT:
+                        CALL    ERASE_OBJECT_BITMAP
+                        RES     7,(IX+OBJECT_FLAGS)
+                        RET
+
+; Clear the two per-station result bytes selected by torpedo-record parity.
+; The even interleaved torpedo records belong to the left station.
+CLEAR_TORPEDO_RESULT_STATE:
+                        PUSH    IX
+                        POP     HL
+                        BIT     0,L
+                        LD      HL,$C1EA
+                        JR      NZ,torpedo_result_state_selected
+                        LD      HL,$C1E5
+torpedo_result_state_selected:
+                        LD      (HL),$00
+                        INC     HL
+                        LD      (HL),$00
+                        RET
+;-------------------------------------------------------------------------------
+; $14B4: Update one torpedo and resolve its collision lane
+;-------------------------------------------------------------------------------
+UPDATE_TORPEDO_OBJECT:  LD      HL,$112D               ; base torpedo bitmap
+                        LD      (IX+OBJECT_BITMAP_PTR_HI),H
+                        LD      (IX+OBJECT_BITMAP_PTR_LO),L
+                        LD      H,(IX+OBJECT_VRAM_ADDR_HI)
+                        LD      L,(IX+OBJECT_VRAM_ADDR_LO)
+                        PUSH    HL                      ; previous draw address
+                        CALL    INTEGRATE_OBJECT_MOTION
+                        BIT     4,(IX+OBJECT_FLAGS)
+                        PUSH    AF
+                        CALL    NZ,CLEAR_TORPEDO_RESULT_STATE
+                        POP     AF
+                        PUSH    AF
+                        CALL    Z,PREPARE_OBJECT_RENDER
+                        POP     AF
+                        POP     HL
+                        JR      NZ,ERASE_AND_DEACTIVATE_OBJECT
+                        LD      A,H
+                        OR      L
+                        JP      Z,DRAW_NEW_TORPEDO_FRAME
+
+; Probe the seven Magic-RAM bytes covered by the torpedo's old bitmap.  Only
+; pixel values with either high color bit set can represent a target overlap.
+                        LD      DE,$3F60
+                        ADD     HL,DE
+                        LD      A,(HL)
+                        INC     HL
+                        OR      (HL)
+                        LD      DE,$004F
+                        ADD     HL,DE
+                        OR      (HL)
+                        INC     HL
+                        OR      (HL)
+                        LD      DE,$00EF
+                        LD      B,A
+                        ADD     HL,DE
+                        OR      (HL)
+                        LD      DE,$0050
+                        ADD     HL,DE
+                        OR      (HL)
+                        ADD     HL,DE
+                        OR      (HL)
+                        AND     $C0
+                        OR      B
+                        JP      Z,DRAW_NEW_TORPEDO_FRAME
+                        CALL    ERASE_OBJECT_BITMAP
+
+; The torpedo's Y coordinate selects one of five two-record collision lanes.
+; C preserves the lane number: 1-2 are ships, 3-5 are mines.
+                        LD      A,(IX+OBJECT_Y_POSITION_HI)
+                        LD      B,$05
+                        LD      HL,TORPEDO_COLLISION_LANE_TABLE
+find_collision_lane:    CP      (HL)
+                        JR      NC,collision_lane_found
+                        INC     HL
+                        INC     HL
+                        INC     HL
+                        DJNZ    find_collision_lane
+collision_lane_found:   LD      C,B
+                        INC     HL
+                        LD      E,(HL)
+                        INC     HL
+                        LD      D,(HL)
+                        PUSH    DE
+                        POP     IY
+                        LD      B,$02
+
+; Lane selection establishes vertical overlap.  Horizontal overlap uses the
+; target bitmap width in four-pixel units.  Already exploding targets are not
+; eligible for a second collision.
+scan_collision_candidates:
+                        BIT     7,(IY+OBJECT_FLAGS)
+                        JR      Z,next_collision_candidate
+                        LD      A,(IX+OBJECT_X_POSITION_HI)
+                        ADD     A,$04
+                        SUB     (IY+OBJECT_X_POSITION_HI)
+                        JR      C,next_collision_candidate
+                        LD      H,(IY+OBJECT_BITMAP_PTR_HI)
+                        LD      L,(IY+OBJECT_BITMAP_PTR_LO)
+                        LD      D,(HL)
+                        INC     D
+                        SLA     D
+                        SLA     D
+                        CP      D
+                        JR      NC,next_collision_candidate
+                        BIT     6,(IY+OBJECT_FLAGS)
+                        JR      NZ,next_collision_candidate
+                        XOR     A
+                        LD      (IY+OBJECT_TIMER),A
+                        SET     6,(IY+OBJECT_FLAGS)
+                        SET     5,(IY+OBJECT_FLAGS)
 
 ; The collision resolver reaches this producer after a torpedo overlaps a
 ; target.  IX record parity selects the cabinet side; the target class in C
@@ -1500,14 +2072,14 @@ SELECT_COLLISION_SOUND_SIDE:
                         PUSH    IX
                         POP     HL
                         LD      D,$30                  ; right ship/mine bits 4/5
-                        RES     3,(IY+$00)
+                        RES     3,(IY+OBJECT_FLAGS)
                         BIT     0,L
                         JR      NZ,collision_side_selected
-                        SET     3,(IY+$00)
+                        SET     3,(IY+OBJECT_FLAGS)
                         LD      D,$06                  ; left ship/mine bits 1/2
 collision_side_selected:
-                        LD      B,(IX+$17)
-                        RES     7,(IX+$00)
+                        LD      B,(IX+OBJECT_COLOR)
+                        RES     7,(IX+OBJECT_FLAGS)
 
 ; C > 2 is a mine collision: mask $24 selects bits 2/5 and produces an
 ; eight-frame mine-hit pulse.  C <= 2 is a ship collision: mask $12 selects
@@ -1519,13 +2091,13 @@ select_mine_hit_sound:
                         LD      A,$24
                         LD      C,$08
                         PUSH    AF
-                        CALL    C,$14A1
+                        CALL    C,CLEAR_TORPEDO_RESULT_STATE
                         POP     AF
                         JR      C,hit_sound_class_selected
 select_ship_hit_sound:
                         LD      A,$12
                         LD      C,$40
-                        LD      (IY+$17),B
+                        LD      (IY+OBJECT_COLOR),B
 hit_sound_class_selected:
                         AND     D
                         LD      HL,SOUND_LEFT_TORPEDO_TIMER
@@ -1540,16 +2112,45 @@ store_hit_sound_timer:  SRL     A
 next_hit_sound_timer:   DEC     HL
                         DJNZ    store_hit_sound_timer
 next_collision_candidate:
-                        LD      DE,$0019
+                        LD      DE,OBJECT_RECORD_SIZE
                         ADD     IY,DE
-                        DJNZ    $151B
+                        DJNZ    scan_collision_candidates
                         RET
-                        DB      $DD,$7E,$08,$06,$00,$21,$E4,$1A,$BE,$30,$04,$23 ; $1592
-                        DB      $04,$18,$F9,$DD,$70,$18,$CD,$33,$18,$CD,$FA,$18,$C9,$DD,$CB,$00 ; $159E  ....p..3........
-                        DB      $76,$28,$07,$DD,$36,$02,$00,$C3,$DA,$17,$CD,$71,$19,$DD,$CB,$00 ; $15AE  v(..6......q....
-                        DB      $66,$28,$0F,$DD,$CB,$00,$A6,$DD,$36,$0F,$00,$DD,$36,$0E,$00,$CD ; $15BE  f(......6...6...
-                        DB      $71,$19,$CD,$33,$18,$CD,$56,$18,$C9,$3E,$01,$32,$DD,$C1,$CD,$E4 ; $15CE  q..3..V..>.2....
-                        DB      $15,$AF,$32,$DD,$C1,$C9                                         ; $15DE  ..2...
+; Select the torpedo perspective frame from its Y coordinate, then use the
+; compact duplicated-pixel renderer.
+DRAW_NEW_TORPEDO_FRAME:
+                        LD      A,(IX+OBJECT_Y_POSITION_HI)
+                        LD      B,$00
+                        LD      HL,TORPEDO_FRAME_Y_TABLE
+find_torpedo_frame:     CP      (HL)
+                        JR      NC,torpedo_frame_selected
+                        INC     HL
+                        INC     B
+                        JR      find_torpedo_frame
+torpedo_frame_selected:
+                        LD      (IX+OBJECT_ANIMATION_FRAME),B
+                        CALL    SELECT_OBJECT_BITMAP
+                        CALL    DRAW_TORPEDO_BITMAP
+                        RET
+
+;-------------------------------------------------------------------------------
+; $15AB: Update one mine from the six-record mine pool
+;-------------------------------------------------------------------------------
+UPDATE_MINE_OBJECT:     BIT     6,(IX+OBJECT_FLAGS)
+                        JR      Z,move_mine_object
+                        LD      (IX+OBJECT_TIMER),$00
+                        JP      ADVANCE_OBJECT_HIT_ANIMATION
+move_mine_object:       CALL    INTEGRATE_OBJECT_MOTION
+                        BIT     4,(IX+OBJECT_FLAGS)
+                        JR      Z,draw_mine_object
+                        RES     4,(IX+OBJECT_FLAGS)
+                        LD      (IX+OBJECT_X_POSITION_HI),$00
+                        LD      (IX+OBJECT_X_POSITION_LO),$00
+                        CALL    INTEGRATE_OBJECT_MOTION
+draw_mine_object:       CALL    SELECT_OBJECT_BITMAP
+                        CALL    DRAW_OBJECT_BITMAP
+                        RET
+                        DB      $3E,$01,$32,$DD,$C1,$CD,$E4,$15,$AF,$32,$DD,$C1,$C9 ; $15D7
 
 ;-------------------------------------------------------------------------------
 ; $15E4: Draw a zero-terminated text string
@@ -1599,53 +2200,407 @@ DRAW_SMALL_BITMAP:
 ;-------------------------------------------------------------------------------
 CLEAR_CHARACTER_ROWS:
                         DB      $E5,$3A,$02,$C2,$F3,$D3,$19,$3E,$08,$D3,$0C,$AF,$77,$23,$77,$FB ; $16DF  .:.....>....w#w.
-                        DB      $E1,$01,$50,$00,$09,$C9,$7C,$B5,$28,$09,$E5,$B7,$ED,$52,$7C,$B5 ; $16EF  ..P...|.(....R|.
-                        DB      $E1,$20,$04,$60,$69,$18,$04,$11,$19,$00,$19,$E5,$DD,$E1,$C9,$DD ; $16FF  . .`i...........
-                        DB      $7E,$02,$B7,$C8,$DD,$35,$02,$C9,$2A,$C2,$C1,$01,$00,$C0,$11,$4B ; $170F  ~....5..*......K
-                        DB      $C0,$CD,$F5,$16,$22,$C2,$C1,$DD,$CB,$00,$7E,$F5,$C4,$63,$14,$F1 ; $171F  ....".....~..c..
-                        DB      $CC,$0E,$17,$C9,$2A,$C6,$C1,$01,$FA,$C0,$11,$A9,$C1,$CD,$F5,$16 ; $172F  ....*...........
-                        DB      $22,$C6,$C1,$DD,$CB,$00,$7E,$C4,$B4,$14,$C9,$2A,$C4,$C1,$01,$64 ; $173F  ".....~....*...d
-                        DB      $C0,$11,$E1,$C0,$CD,$F5,$16,$22,$C4,$C1,$DD,$CB,$00,$7E,$F5,$C4 ; $174F  .......".....~..
-                        DB      $AB,$15,$F1,$CC,$0E,$17,$C9,$2A,$FC,$C1,$23,$23,$23,$7E,$D3,$05 ; $175F  .......*..###~..
+                        DB      $E1,$01,$50,$00,$09,$C9 ; $16EF
+
+;-------------------------------------------------------------------------------
+; $16F5: Advance a round-robin scheduler cursor to one object record
+;-------------------------------------------------------------------------------
+; HL is the saved cursor, BC the first record and DE the last record start.
+; A zero cursor or the last record wraps to the pool base.  IX receives the
+; selected record while HL remains available for saving as the new cursor.
+SELECT_NEXT_OBJECT_RECORD:
+                        LD      A,H
+                        OR      L
+                        JR      Z,wrap_object_cursor
+                        PUSH    HL
+                        OR      A
+                        SBC     HL,DE
+                        LD      A,H
+                        OR      L
+                        POP     HL
+                        JR      NZ,advance_object_cursor
+wrap_object_cursor:     LD      H,B
+                        LD      L,C
+                        JR      object_cursor_selected
+advance_object_cursor:  LD      DE,OBJECT_RECORD_SIZE
+                        ADD     HL,DE
+object_cursor_selected: PUSH    HL
+                        POP     IX
+                        RET
+
+; Inactive records reuse byte 2 as a respawn/cooldown timer.
+DECAY_OBJECT_TIMER:     LD      A,(IX+OBJECT_TIMER)
+                        OR      A
+                        RET     Z
+                        DEC     (IX+OBJECT_TIMER)
+                        RET
+
+; The interrupt calls this twice, updating two of four moving targets.
+SERVICE_TARGET_POOL:    LD      HL,(TARGET_SCHEDULER_CURSOR)
+                        LD      BC,TARGET_POOL_BASE
+                        LD      DE,TARGET_POOL_LAST
+                        CALL    SELECT_NEXT_OBJECT_RECORD
+                        LD      (TARGET_SCHEDULER_CURSOR),HL
+                        BIT     7,(IX+OBJECT_FLAGS)
+                        PUSH    AF
+                        CALL    NZ,UPDATE_TARGET_OBJECT
+                        POP     AF
+                        CALL    Z,DECAY_OBJECT_TIMER
+                        RET
+
+; Four calls service half of the eight interleaved torpedo records.
+SERVICE_TORPEDO_POOL:   LD      HL,(TORPEDO_SCHEDULER_CURSOR)
+                        LD      BC,TORPEDO_POOL_BASE
+                        LD      DE,TORPEDO_POOL_LAST
+                        CALL    SELECT_NEXT_OBJECT_RECORD
+                        LD      (TORPEDO_SCHEDULER_CURSOR),HL
+                        BIT     7,(IX+OBJECT_FLAGS)
+                        CALL    NZ,UPDATE_TORPEDO_OBJECT
+                        RET
+
+; One call advances the six-record mine pool.
+SERVICE_MINE_POOL:      LD      HL,(MINE_SCHEDULER_CURSOR)
+                        LD      BC,MINE_POOL_BASE
+                        LD      DE,MINE_POOL_LAST
+                        CALL    SELECT_NEXT_OBJECT_RECORD
+                        LD      (MINE_SCHEDULER_CURSOR),HL
+                        BIT     7,(IX+OBJECT_FLAGS)
+                        PUSH    AF
+                        CALL    NZ,UPDATE_MINE_OBJECT
+                        POP     AF
+                        CALL    Z,DECAY_OBJECT_TIMER
+                        RET
+                        DB      $2A,$FC,$C1,$23,$23,$23,$7E,$D3,$05 ; $1766
                         DB      $23,$7E,$D3,$06,$23,$7E,$D3,$07,$23,$7D,$D3,$0D,$7C,$ED,$47,$23 ; $176F  #~..#~..#}..|.G#
                         DB      $23,$7E,$32,$10,$C2,$23,$7E,$32,$11,$C2,$23,$7E,$FE,$FF,$20,$03 ; $177F  #~2..#~2..#~.. .
                         DB      $2A,$0D,$C2,$22,$FC,$C1,$7E,$D3,$0F,$32,$0F,$C2,$23,$23,$08,$7E ; $178F  *.."..~..2..##.~
                         DB      $08,$2A,$10,$C2,$7C,$B5,$C8,$35,$28,$1D,$23,$7E,$23,$CB,$7F,$20 ; $179F  .*..|..5(.#~#..
                         DB      $0E,$86,$77,$23,$7E,$CE,$00,$77,$3A,$0F,$C2,$86,$D3,$0F,$C9,$86 ; $17AF  ..w#~..w:.......
                         DB      $77,$23,$7E,$CE,$FF,$18,$F0,$36,$50,$23,$7E,$ED,$44,$77,$F2,$AB ; $17BF  w#~....6P#~.Dw..
-                        DB      $17,$23,$36,$00,$23,$36,$00,$2B,$2B,$18,$D1,$CD,$0E,$17,$B7,$C0 ; $17CF  .#6.#6.++.......
-                        DB      $DD,$36,$02,$06,$CD,$0A,$18,$DD,$7E,$01,$FE,$08,$20,$0B,$DD,$7E ; $17DF  .6......~... ..~
-                        DB      $18,$FE,$02,$30,$04,$DD,$36,$18,$02,$DD,$34,$18,$CD,$33,$18,$C2 ; $17EF  ...0..6...4..3..
-                        DB      $56,$18,$DD,$CB,$00,$BE,$DD,$36,$02,$2D,$C9,$DD,$66,$13,$DD,$6E ; $17FF  V......6.-..f..n
-                        DB      $12,$5E,$1C,$23,$56,$DD,$66,$16,$DD,$6E,$15,$AF,$D3,$0C,$AF,$4F ; $180F  .^.#V.f..n.....O
-                        DB      $43,$E5,$71,$23,$71,$23,$10,$FA,$E1,$7D,$C6,$50,$6F,$30,$01,$24 ; $181F  C.q#q#...}.Po0.$
-                        DB      $15,$20,$ED,$C9,$DD,$7E,$01,$21,$C3,$1A,$CD,$4B,$18,$DD,$7E,$18 ; $182F  . ...~.!...K..~.
-                        DB      $CD,$4B,$18,$DD,$75,$12,$DD,$74,$13,$7C,$B5,$C9,$CB,$27,$16,$00 ; $183F  .K..u..t.|...'..
-                        DB      $5F,$19,$5E,$23,$56,$EB,$C9,$DD,$CB,$14,$76,$C2,$9F,$18,$CD,$3C ; $184F  _.^#V.....v....<
-                        DB      $19,$DD,$66,$13,$DD,$6E,$12,$DD,$56,$16,$DD,$5E,$15,$E5,$FD,$E1 ; $185F  ..f..n..V..^....
-                        DB      $23,$23,$FD,$4E,$01,$FD,$46,$00,$D5,$DD,$CB,$14,$5E,$20,$08,$7E ; $186F  ##.N..F.....^ .~
-                        DB      $12,$13,$23,$10,$FA,$18,$08,$7E,$12,$13,$12,$13,$23,$10,$F8,$AF ; $187F  ..#....~....#...
-                        DB      $12,$32,$FF,$3F,$D1,$0D,$C8,$7B,$C6,$50,$5F,$30,$D8,$14,$18,$D5 ; $188F  .2.?...{.P_0....
-                        DB      $CD,$3C,$19,$DD,$56,$16,$DD,$5E,$15,$DD,$66,$13,$DD,$6E,$12,$E5 ; $189F  .<..V..^..f..n..
-                        DB      $FD,$E1,$23,$23,$FD,$46,$00,$DD,$CB,$14,$5E,$28,$02,$CB,$20,$DD ; $18AF  ..##.F....^(.. .
-                        DB      $7E,$14,$EE,$03,$D3,$0C,$E5,$68,$26,$00,$19,$EB,$E1,$FD,$4E,$01 ; $18BF  ~......h&.....N.
-                        DB      $FD,$46,$00,$D5,$DD,$CB,$14,$5E,$20,$08,$7E,$12,$1B,$23,$10,$FA ; $18CF  .F.....^ .~..#..
-                        DB      $18,$08,$7E,$12,$1B,$12,$1B,$23,$10,$F8,$AF,$12,$32,$FF,$3F,$D1 ; $18DF  ..~....#....2.?.
-                        DB      $0D,$C8,$7B,$C6,$50,$5F,$30,$D8,$14,$18,$D5,$DD,$7E,$17,$D3,$19 ; $18EF  ..{.P_0.....~...
-                        DB      $DD,$7E,$14,$D3,$0C,$DD,$56,$13,$DD,$5E,$12,$DD,$66,$16,$DD,$6E ; $18FF  .~....V..^..f..n
-                        DB      $15,$13,$1A,$47,$13,$1A,$13,$77,$23,$77,$7D,$C6,$4F,$6F,$30,$01 ; $190F  ...G...w#w}.Oo0.
-                        DB      $24,$10,$F2,$C9,$DD,$46,$14,$DD,$7E,$08,$DD,$66,$13,$DD,$6E,$12 ; $191F  $....F..~..f..n.
-                        DB      $23,$96,$57,$DD,$66,$0F,$DD,$6E,$0E,$CD,$51,$19,$C9,$CD,$23,$19 ; $192F  #.W.f..n..Q...#.
-                        DB      $DD,$7E,$17,$D3,$19,$78,$D3,$0C,$DD,$70,$14,$DD,$74,$16,$DD,$75 ; $193F  .~...x...p..t..u
-                        DB      $15,$C9,$3E,$03,$2F,$A0,$47,$E5,$29,$7C,$E6,$03,$B0,$47,$6A,$26 ; $194F  ..>./.G.)|...Gj&
-                        DB      $00,$29,$29,$29,$29,$54,$5D,$29,$29,$19,$D1,$CB,$3A,$5A,$16,$00 ; $195F  .))))T]))...:Z..
-                        DB      $19,$C9,$DD,$6E,$05,$DD,$66,$06,$DD,$5E,$03,$DD,$56,$04,$19,$DD ; $196F  ...n..f..^..V...
-                        DB      $75,$05,$DD,$74,$06,$DD,$5E,$07,$DD,$56,$08,$19,$DD,$75,$07,$DD ; $197F  u..t..^..V...u..
-                        DB      $74,$08,$DD,$56,$09,$1E,$00,$B7,$ED,$52,$30,$0A,$DD,$CB,$00,$E6 ; $198F  t..V.....R0.....
-                        DB      $DD,$73,$07,$DD,$72,$08,$DD,$6E,$0C,$DD,$66,$0D,$DD,$5E,$0E,$DD ; $199F  .s..r..n..f..^..
-                        DB      $56,$0F,$19,$DD,$75,$0E,$DD,$74,$0F,$E5,$11,$00,$00,$B7,$ED,$52 ; $19AF  V...u..t.......R
-                        DB      $DC,$CD,$19,$E1,$DD,$56,$11,$B7,$ED,$52,$D4,$CD,$19,$C9,$DD,$CB ; $19BF  .....V...R......
-                        DB      $00,$E6,$DD,$73,$0E,$DD,$72,$0F,$C9,$84,$00,$DC,$77,$58,$00,$48 ; $19CF  ...s..r.....wX.H
+                        DB      $17,$23,$36,$00,$23,$36,$00,$2B,$2B,$18,$D1 ; $17CF
+
+;-------------------------------------------------------------------------------
+; $17DA: Advance a collided target or mine through its hit-animation frames
+;-------------------------------------------------------------------------------
+ADVANCE_OBJECT_HIT_ANIMATION:
+                        CALL    DECAY_OBJECT_TIMER
+                        OR      A
+                        RET     NZ
+                        LD      (IX+OBJECT_TIMER),$06
+                        CALL    ERASE_OBJECT_BITMAP
+                        LD      A,(IX+OBJECT_TYPE)
+                        CP      OBJECT_TYPE_DIVE_TARGET
+                        JR      NZ,advance_hit_frame
+                        LD      A,(IX+OBJECT_ANIMATION_FRAME)
+                        CP      $02
+                        JR      NC,advance_hit_frame
+                        LD      (IX+OBJECT_ANIMATION_FRAME),$02
+advance_hit_frame:      INC     (IX+OBJECT_ANIMATION_FRAME)
+                        CALL    SELECT_OBJECT_BITMAP
+                        JP      NZ,DRAW_OBJECT_BITMAP
+                        RES     7,(IX+OBJECT_FLAGS)
+                        LD      (IX+OBJECT_TIMER),$2D
+                        RET
+
+; Clear the complete bounding box occupied by the prior bitmap.  The bitmap
+; descriptor begins with source-byte width and row count; VRAM rows are $50
+; bytes apart.
+ERASE_OBJECT_BITMAP:    LD      H,(IX+OBJECT_BITMAP_PTR_HI)
+                        LD      L,(IX+OBJECT_BITMAP_PTR_LO)
+                        LD      E,(HL)
+                        INC     E
+                        INC     HL
+                        LD      D,(HL)
+                        LD      H,(IX+OBJECT_VRAM_ADDR_HI)
+                        LD      L,(IX+OBJECT_VRAM_ADDR_LO)
+                        XOR     A
+                        OUT     ($0C),A
+                        XOR     A
+                        LD      C,A
+erase_object_row:       LD      B,E
+                        PUSH    HL
+erase_object_byte:      LD      (HL),C
+                        INC     HL
+                        LD      (HL),C
+                        INC     HL
+                        DJNZ    erase_object_byte
+                        POP     HL
+                        LD      A,L
+                        ADD     A,$50
+                        LD      L,A
+                        JR      NC,erase_row_address_ready
+                        INC     H
+erase_row_address_ready:
+                        DEC     D
+                        JR      NZ,erase_object_row
+                        RET
+
+; OBJECT_TYPE selects an animation pointer list; OBJECT_ANIMATION_FRAME selects
+; one bitmap descriptor within that list.  A null pointer terminates a hit
+; animation and is returned with Z set.
+SELECT_OBJECT_BITMAP:   LD      A,(IX+OBJECT_TYPE)
+                        LD      HL,OBJECT_BITMAP_SET_TABLE
+                        CALL    LOOKUP_WORD_BY_INDEX
+                        LD      A,(IX+OBJECT_ANIMATION_FRAME)
+                        CALL    LOOKUP_WORD_BY_INDEX
+                        LD      (IX+OBJECT_BITMAP_PTR_LO),L
+                        LD      (IX+OBJECT_BITMAP_PTR_HI),H
+                        LD      A,H
+                        OR      L
+                        RET
+
+LOOKUP_WORD_BY_INDEX:   SLA     A
+                        LD      D,$00
+                        LD      E,A
+                        ADD     HL,DE
+                        LD      E,(HL)
+                        INC     HL
+                        LD      D,(HL)
+                        EX      DE,HL
+                        RET
+;-------------------------------------------------------------------------------
+; $1856: Draw the selected bitmap in its configured horizontal direction
+;-------------------------------------------------------------------------------
+DRAW_OBJECT_BITMAP:     BIT     6,(IX+OBJECT_MAGIC_MODE)
+                        JP      NZ,DRAW_OBJECT_BITMAP_REVERSED
+                        CALL    PREPARE_OBJECT_RENDER
+                        LD      H,(IX+OBJECT_BITMAP_PTR_HI)
+                        LD      L,(IX+OBJECT_BITMAP_PTR_LO)
+                        LD      D,(IX+OBJECT_VRAM_ADDR_HI)
+                        LD      E,(IX+OBJECT_VRAM_ADDR_LO)
+                        PUSH    HL
+                        POP     IY
+                        INC     HL
+                        INC     HL
+                        LD      C,(IY+BITMAP_ROW_COUNT)
+draw_object_forward_row:
+                        LD      B,(IY+BITMAP_SOURCE_WIDTH)
+                        PUSH    DE
+                        BIT     3,(IX+OBJECT_MAGIC_MODE)
+                        JR      NZ,draw_forward_expanded
+draw_forward_byte:      LD      A,(HL)
+                        LD      (DE),A
+                        INC     DE
+                        INC     HL
+                        DJNZ    draw_forward_byte
+                        JR      finish_forward_row
+draw_forward_expanded:  LD      A,(HL)
+                        LD      (DE),A
+                        INC     DE
+                        LD      (DE),A
+                        INC     DE
+                        INC     HL
+                        DJNZ    draw_forward_expanded
+finish_forward_row:     XOR     A
+                        LD      (DE),A
+                        LD      ($3FFF),A
+                        POP     DE
+                        DEC     C
+                        RET     Z
+                        LD      A,E
+                        ADD     A,$50
+                        LD      E,A
+                        JR      NC,draw_object_forward_row
+                        INC     D
+                        JR      draw_object_forward_row
+
+; Reverse drawing starts at the bitmap's right edge and walks VRAM backward.
+DRAW_OBJECT_BITMAP_REVERSED:
+                        CALL    PREPARE_OBJECT_RENDER
+                        LD      D,(IX+OBJECT_VRAM_ADDR_HI)
+                        LD      E,(IX+OBJECT_VRAM_ADDR_LO)
+                        LD      H,(IX+OBJECT_BITMAP_PTR_HI)
+                        LD      L,(IX+OBJECT_BITMAP_PTR_LO)
+                        PUSH    HL
+                        POP     IY
+                        INC     HL
+                        INC     HL
+                        LD      B,(IY+BITMAP_SOURCE_WIDTH)
+                        BIT     3,(IX+OBJECT_MAGIC_MODE)
+                        JR      Z,reverse_width_ready
+                        SLA     B
+reverse_width_ready:    LD      A,(IX+OBJECT_MAGIC_MODE)
+                        XOR     $03
+                        OUT     ($0C),A
+                        PUSH    HL
+                        LD      L,B
+                        LD      H,$00
+                        ADD     HL,DE
+                        EX      DE,HL
+                        POP     HL
+                        LD      C,(IY+BITMAP_ROW_COUNT)
+draw_object_reverse_row:
+                        LD      B,(IY+BITMAP_SOURCE_WIDTH)
+                        PUSH    DE
+                        BIT     3,(IX+OBJECT_MAGIC_MODE)
+                        JR      NZ,draw_reverse_expanded
+draw_reverse_byte:      LD      A,(HL)
+                        LD      (DE),A
+                        DEC     DE
+                        INC     HL
+                        DJNZ    draw_reverse_byte
+                        JR      finish_reverse_row
+draw_reverse_expanded:  LD      A,(HL)
+                        LD      (DE),A
+                        DEC     DE
+                        LD      (DE),A
+                        DEC     DE
+                        INC     HL
+                        DJNZ    draw_reverse_expanded
+finish_reverse_row:     XOR     A
+                        LD      (DE),A
+                        LD      ($3FFF),A
+                        POP     DE
+                        DEC     C
+                        RET     Z
+                        LD      A,E
+                        ADD     A,$50
+                        LD      E,A
+                        JR      NC,draw_object_reverse_row
+                        INC     D
+                        JR      draw_object_reverse_row
+;-------------------------------------------------------------------------------
+; $18FA: Draw the narrow perspective torpedo bitmap
+;-------------------------------------------------------------------------------
+; Torpedo frames are a vertical byte stream.  Each source byte is duplicated
+; horizontally and successive bytes advance one $50-byte video row.
+DRAW_TORPEDO_BITMAP:    LD      A,(IX+OBJECT_COLOR)
+                        OUT     ($19),A
+                        LD      A,(IX+OBJECT_MAGIC_MODE)
+                        OUT     ($0C),A
+                        LD      D,(IX+OBJECT_BITMAP_PTR_HI)
+                        LD      E,(IX+OBJECT_BITMAP_PTR_LO)
+                        LD      H,(IX+OBJECT_VRAM_ADDR_HI)
+                        LD      L,(IX+OBJECT_VRAM_ADDR_LO)
+                        INC     DE
+                        LD      A,(DE)
+                        LD      B,A
+                        INC     DE
+draw_torpedo_row:       LD      A,(DE)
+                        INC     DE
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),A
+                        LD      A,L
+                        ADD     A,$4F
+                        LD      L,A
+                        JR      NC,torpedo_row_address_ready
+                        INC     H
+torpedo_row_address_ready:
+                        DJNZ    draw_torpedo_row
+                        RET
+
+; Convert fixed-point object coordinates to a video address and Magic-RAM
+; shift.  OBJECT_Y_POSITION_HI is the bitmap's bottom edge, so its row count is
+; subtracted before mapping the top-left draw position.
+CALCULATE_OBJECT_SCREEN_ADDRESS:
+                        LD      B,(IX+OBJECT_MAGIC_MODE)
+                        LD      A,(IX+OBJECT_Y_POSITION_HI)
+                        LD      H,(IX+OBJECT_BITMAP_PTR_HI)
+                        LD      L,(IX+OBJECT_BITMAP_PTR_LO)
+                        INC     HL
+                        SUB     (HL)
+                        LD      D,A
+                        LD      H,(IX+OBJECT_X_POSITION_HI)
+                        LD      L,(IX+OBJECT_X_POSITION_LO)
+                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        RET
+
+; Program the object's color/mode and retain the mapped VRAM address.  The
+; coordinate mapper inserts the sub-byte horizontal shift into B.
+PREPARE_OBJECT_RENDER:  CALL    CALCULATE_OBJECT_SCREEN_ADDRESS
+                        LD      A,(IX+OBJECT_COLOR)
+                        OUT     ($19),A
+                        LD      A,B
+                        OUT     ($0C),A
+                        LD      (IX+OBJECT_MAGIC_MODE),B
+                        LD      (IX+OBJECT_VRAM_ADDR_HI),H
+                        LD      (IX+OBJECT_VRAM_ADDR_LO),L
+                        RET
+
+; D = video row; HL = 8.8 horizontal coordinate; B = base Magic-RAM mode.
+; Returns HL as row*80 + x/2 and merges the two-bit pixel shift into B.
+MAP_OBJECT_COORDINATES_TO_VRAM:
+                        LD      A,$03
+                        CPL
+                        AND     B
+                        LD      B,A
+                        PUSH    HL
+                        ADD     HL,HL
+                        LD      A,H
+                        AND     $03
+                        OR      B
+                        LD      B,A
+                        LD      L,D
+                        LD      H,$00
+                        ADD     HL,HL
+                        ADD     HL,HL
+                        ADD     HL,HL
+                        ADD     HL,HL
+                        LD      D,H
+                        LD      E,L
+                        ADD     HL,HL
+                        ADD     HL,HL
+                        ADD     HL,DE                  ; row * $50
+                        POP     DE
+                        SRL     D
+                        LD      E,D
+                        LD      D,$00
+                        ADD     HL,DE
+                        RET
+;-------------------------------------------------------------------------------
+; $1971: Integrate one object's 8.8 fixed-point motion
+;-------------------------------------------------------------------------------
+; Y velocity is accelerated, then added to Y position.  Crossing OBJECT_Y_MIN
+; clamps the coordinate and raises OBJECT_FLAG_AT_BOUNDARY.  X uses constant
+; velocity and is clamped against zero/OBJECT_X_MAX through the same flag.
+INTEGRATE_OBJECT_MOTION:
+                        LD      L,(IX+OBJECT_Y_VELOCITY_LO)
+                        LD      H,(IX+OBJECT_Y_VELOCITY_HI)
+                        LD      E,(IX+OBJECT_Y_ACCEL_LO)
+                        LD      D,(IX+OBJECT_Y_ACCEL_HI)
+                        ADD     HL,DE
+                        LD      (IX+OBJECT_Y_VELOCITY_LO),L
+                        LD      (IX+OBJECT_Y_VELOCITY_HI),H
+                        LD      E,(IX+OBJECT_Y_POSITION_LO)
+                        LD      D,(IX+OBJECT_Y_POSITION_HI)
+                        ADD     HL,DE
+                        LD      (IX+OBJECT_Y_POSITION_LO),L
+                        LD      (IX+OBJECT_Y_POSITION_HI),H
+                        LD      D,(IX+OBJECT_Y_MIN)
+                        LD      E,$00
+                        OR      A
+                        SBC     HL,DE
+                        JR      NC,object_y_in_range
+                        SET     4,(IX+OBJECT_FLAGS)
+                        LD      (IX+OBJECT_Y_POSITION_LO),E
+                        LD      (IX+OBJECT_Y_POSITION_HI),D
+object_y_in_range:
+                        LD      L,(IX+OBJECT_X_VELOCITY_LO)
+                        LD      H,(IX+OBJECT_X_VELOCITY_HI)
+                        LD      E,(IX+OBJECT_X_POSITION_LO)
+                        LD      D,(IX+OBJECT_X_POSITION_HI)
+                        ADD     HL,DE
+                        LD      (IX+OBJECT_X_POSITION_LO),L
+                        LD      (IX+OBJECT_X_POSITION_HI),H
+                        PUSH    HL
+                        LD      DE,$0000
+                        OR      A
+                        SBC     HL,DE
+                        CALL    C,CLAMP_OBJECT_X_AND_FLAG_BOUNDARY
+                        POP     HL
+                        LD      D,(IX+OBJECT_X_MAX)
+                        OR      A
+                        SBC     HL,DE
+                        CALL    NC,CLAMP_OBJECT_X_AND_FLAG_BOUNDARY
+                        RET
+
+CLAMP_OBJECT_X_AND_FLAG_BOUNDARY:
+                        SET     4,(IX+OBJECT_FLAGS)
+                        LD      (IX+OBJECT_X_POSITION_LO),E
+                        LD      (IX+OBJECT_X_POSITION_HI),D
+                        RET
+                        DB      $84,$00,$DC,$77,$58,$00,$48 ; $19D8
                         DB      $14,$00,$00,$D7,$00,$1C,$77,$58,$00,$48,$14,$00,$00,$0C,$00,$D8 ; $19DF  ......wX.H......
                         DB      $77,$58,$00,$86,$13,$12,$C2,$18,$00,$D9,$77,$58,$00,$48,$14,$16 ; $19EF  wX........wX.H..
                         DB      $C2,$30,$00,$DA,$77,$58,$00,$48,$14,$1A,$C2,$54,$00,$DB,$77,$58 ; $19FF  .0..wX.H...T..wX
