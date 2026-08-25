@@ -187,7 +187,9 @@ GERMAN_PROMPT_TABLE_OFFSET EQU  $011A
 FRENCH_PROMPT_TABLE_OFFSET  EQU  $0339
 
 FONT_ASCII_BASE         EQU     $30
+FONT_ASCII_LAST         EQU     $5A
 FONT_BYTES_PER_GLYPH    EQU     $0A
+FONT_GLYPH_COUNT        EQU     $2B
 VIDEO_ROW_STRIDE        EQU     $0050
 TEXT_DOUBLE_ROW_STRIDE  EQU     $00A0
 TEXT_NORMAL_X_ADVANCE   EQU     $0400
@@ -252,6 +254,8 @@ PLAYER_STATUS_SOURCE_WIDTH EQU  $03
 
 SELF_TEST_TEXT_BUFFER   EQU     $C000
 SELF_TEST_ROM_BLOCK_SIZE EQU    $0800
+SELF_TEST_PALETTE_BYTES EQU     $08
+SELF_TEST_FAILURE_PATTERN_BYTES EQU $0028
 
 GAME_CLOCK_DIVIDER          EQU $C1DA
 GAME_TIME_BCD               EQU $C1DB
@@ -345,6 +349,8 @@ OBJECT_ANIMATION_FRAME      EQU $18
 
 BITMAP_SOURCE_WIDTH         EQU $00
 BITMAP_ROW_COUNT            EQU $01
+BITMAP_SOURCE_PIXELS_PER_BYTE EQU $08
+BITMAP_LOGICAL_X_UNITS_PER_BYTE EQU $04
 
 ; OBJECT_FLAGS bits.  Bits 0-1 are unused by every object path in this ROM.
 ; Collision state is deliberately split: bit 6 drives the hit animation while
@@ -360,15 +366,15 @@ OBJECT_FLAG_ACTIVE          EQU $80            ; bit 7
 ; Surface-target IDs $00-$05 are ordered by scoring class.  The 1978 Midway
 ; flyer names the visible target classes; bitmap dimensions distinguish the ROM
 ; variants.  Mine and torpedo records are not traversed by PROCESS_SHIP_HIT.
-OBJECT_TYPE_WARSHIP_A       EQU $00            ; 20x12, 300 points
-OBJECT_TYPE_WARSHIP_B       EQU $01            ; 16x11, 300 points
-OBJECT_TYPE_WARSHIP_C       EQU $02            ; 20x10, 300 points
-OBJECT_TYPE_FREIGHTER_A     EQU $03            ; 16x10, 100 points
-OBJECT_TYPE_FREIGHTER_B     EQU $04            ; 16x9,  100 points
-OBJECT_TYPE_PT_BOAT         EQU $05            ; 12x5,  500 points
-OBJECT_TYPE_MINE            EQU $06            ; 4x16 blocking object
+OBJECT_TYPE_WARSHIP_A       EQU $00            ; 20x12 logical / 40x12 display
+OBJECT_TYPE_WARSHIP_B       EQU $01            ; 16x11 logical / 32x11 display
+OBJECT_TYPE_WARSHIP_C       EQU $02            ; 20x10 logical / 40x10 display
+OBJECT_TYPE_FREIGHTER_A     EQU $03            ; 16x10 logical / 32x10 display
+OBJECT_TYPE_FREIGHTER_B     EQU $04            ; 16x9 logical / 32x9 display
+OBJECT_TYPE_PT_BOAT         EQU $05            ; 12x5 logical / 24x5 display
+OBJECT_TYPE_MINE            EQU $06            ; 4x16 logical / 8x16 display
 OBJECT_TYPE_TORPEDO         EQU $07            ; three perspective frames
-OBJECT_TYPE_SUPER_SUB       EQU $08            ; 16x9, 1000 points
+OBJECT_TYPE_SUPER_SUB       EQU $08            ; 16x9 logical / 32x9 display
 
 SCORE_FREIGHTER_BCD         EQU $01
 SCORE_WARSHIP_BCD           EQU $03
@@ -382,7 +388,6 @@ BONUS_DISPLAY_DURATION      EQU $78
 ; Collision resolver constants.  Horizontal overlap tests the torpedo's
 ; right-edge coordinate against a target span expanded by one four-pixel cell.
 TORPEDO_COLLISION_X_BIAS        EQU $04
-BITMAP_BYTE_PIXEL_WIDTH         EQU $04
 COLLISION_LAST_TARGET_LANE      EQU $02
 COLLISION_SOUND_SIDE_RIGHT      EQU $30
 COLLISION_SOUND_SIDE_LEFT       EQU $06
@@ -405,36 +410,11 @@ TARGET_SPEED_SLOW_RAW       EQU $20
 TARGET_SPEED_MEDIUM_RAW     EQU $40
 TARGET_SPEED_FAST_RAW       EQU $80
 
-; Bitmap descriptors and shared hit-animation frames referenced by the lists
-; at $1A53-$1AC2.  Each descriptor begins with byte width and row count.
-BITMAP_WARSHIP_A            EQU $0E3F
-BITMAP_WARSHIP_B            EQU $0E7D
-BITMAP_WARSHIP_C            EQU $0EAB
-BITMAP_FREIGHTER_A          EQU $0EDF
-BITMAP_FREIGHTER_B          EQU $0F09
-BITMAP_PT_BOAT              EQU $0F2F
-BITMAP_SUPER_SUB_SURFACED   EQU $0F40
-BITMAP_SUPER_SUB_DIVE_1     EQU $0F66
-BITMAP_SUPER_SUB_DIVE_2     EQU $0F88
-BITMAP_LARGE_HIT_FRAME_2    EQU $0FA2
-BITMAP_LARGE_HIT_FRAME_3    EQU $0FE0
-BITMAP_LARGE_HIT_FRAME_4    EQU $100A
-BITMAP_LARGE_HIT_FRAME_5    EQU $1028
-BITMAP_LARGE_HIT_FRAME_6    EQU $103A
-BITMAP_MEDIUM_HIT_FRAME_2   EQU $105E
-BITMAP_MEDIUM_HIT_FRAME_3   EQU $1072
-BITMAP_SMALL_HIT_FRAME_2    EQU $1080
-BITMAP_SMALL_HIT_FRAME_3    EQU $108A
-BITMAP_SMALL_HIT_FRAME_1    EQU $10B0
-BITMAP_MEDIUM_HIT_FRAME_1   EQU $10C1
-BITMAP_LARGE_HIT_FRAME_1    EQU $10EF
-BITMAP_TORPEDO_NEAR         EQU $112D
+; The bitmap symbols are defined at their descriptor bodies in $0E3F-$119E.
+; The initial torpedo templates need literal low/high bytes before those
+; forward definitions are resolved by zmac.
 BITMAP_TORPEDO_NEAR_LO      EQU $2D
 BITMAP_TORPEDO_NEAR_HI      EQU $11
-BITMAP_TORPEDO_MIDDLE       EQU $1147
-BITMAP_TORPEDO_FAR          EQU $1162
-BITMAP_MINE                 EQU $117B
-BITMAP_MINE_HIT             EQU $118D
 
 ; Scheduler pools contain record starts through the inclusive LAST address.
 ; Torpedo records are interleaved by station; successive records for one
@@ -461,6 +441,10 @@ TORPEDO_POOL_RIGHT_BASE     EQU $C113
 TORPEDO_POOL_LAST           EQU $C1A9
 TORPEDO_POOL_COUNT          EQU $08
 TORPEDO_STATION_STRIDE      EQU $32
+TORPEDO_AIM_HANDLE_BASE     EQU $12
+TORPEDO_TRAJECTORY_ENTRY_COUNT EQU $20
+TORPEDO_TRAJECTORY_TABLE_BYTES EQU $40
+TORPEDO_TRAJECTORY_LAST_OFFSET EQU $3E
 
 TORPEDO_FRAME_NEAR_MIN_Y    EQU $78
 TORPEDO_FRAME_MIDDLE_MIN_Y  EQU $46
@@ -663,13 +647,25 @@ TERSE_BRANCH:           LD      A,(BC)
                         DW      _DSPATCH
 
 ;-------------------------------------------------------------------------------
-; $00B0: Power-on video and RAM test patterns
+; $00B0: Power-on video and RAM test palettes and failure pattern
 ;-------------------------------------------------------------------------------
+; OTIR writes each eight-byte palette to color registers $00-$07.  A memory
+; failure copies the four ten-byte rows below twice, then repeats that 80-byte
+; seed across display RAM.
 SELF_TEST_PATTERN_TABLE:
-                        DB      $E2,$E0,$E2,$E0,$E2,$E0,$E2,$E0,$8A,$88,$8A,$88,$8A,$88,$8A,$88 ; $00B0  ................
-                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$55,$55,$55,$55,$55,$55 ; $00C0  ..........UUUUUU
-                        DB      $55,$55,$55,$55,$AA,$AA,$AA,$AA,$AA,$AA,$AA,$AA,$AA,$AA,$FF,$FF ; $00D0  UUUU............
-                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF                                 ; $00E0  ........
+SELF_TEST_VIDEO_PALETTE:
+                        DB      $E2,$E0,$E2,$E0,$E2,$E0,$E2,$E0 ; $00B0-$00B7
+SELF_TEST_WORK_RAM_PALETTE:
+                        DB      $8A,$88,$8A,$88,$8A,$88,$8A,$88 ; $00B8-$00BF
+SELF_TEST_FAILURE_PATTERN:
+SELF_TEST_FAILURE_ROW_00:
+                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$00 ; $00C0-$00C9
+SELF_TEST_FAILURE_ROW_55:
+                        DB      $55,$55,$55,$55,$55,$55,$55,$55,$55,$55 ; $00CA-$00D3
+SELF_TEST_FAILURE_ROW_AA:
+                        DB      $AA,$AA,$AA,$AA,$AA,$AA,$AA,$AA,$AA,$AA ; $00D4-$00DD
+SELF_TEST_FAILURE_ROW_FF:
+                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $00DE-$00E7
 
 ;-------------------------------------------------------------------------------
 ; $00E8: Service-mode diagnostics and hardware verification
@@ -776,8 +772,8 @@ SELF_TEST_MEMORY_DIAGNOSTICS:
                         DI
                         LD      A,$14
                         OUT     (PORT_COLOR_SPLIT),A
-                        LD      B,$08
-                        LD      HL,SELF_TEST_PATTERN_TABLE
+                        LD      B,SELF_TEST_PALETTE_BYTES
+                        LD      HL,SELF_TEST_VIDEO_PALETTE
                         LD      C,PORT_COLOR_BLOCK
                         OTIR
                         LD      IY,SELF_TEST_PARAMETER_SET_1
@@ -796,8 +792,8 @@ SELF_TEST_PARAMETER_SET_1:
 ; $0188: Load the second palette and test the $C000-$C3FF work RAM
 ;-------------------------------------------------------------------------------
 SELF_TEST_SECOND_PASS:
-                        LD      B,$08
-                        LD      HL,SELF_TEST_PATTERN_TABLE+$08
+                        LD      B,SELF_TEST_PALETTE_BYTES
+                        LD      HL,SELF_TEST_WORK_RAM_PALETTE
                         LD      C,PORT_COLOR_BLOCK
                         OTIR
                         LD      IY,SELF_TEST_PARAMETER_SET_2
@@ -891,11 +887,11 @@ SELF_TEST_DISPLAY_MEMORY_FAILURE:
                         EXX
                         IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      DE,VIDEO_RAM_BASE
-                        LD      HL,SELF_TEST_PATTERN_TABLE+$10
-                        LD      BC,$0028
+                        LD      HL,SELF_TEST_FAILURE_PATTERN
+                        LD      BC,SELF_TEST_FAILURE_PATTERN_BYTES
                         LDIR
-                        LD      BC,$0028
-                        LD      HL,SELF_TEST_PATTERN_TABLE+$10
+                        LD      BC,SELF_TEST_FAILURE_PATTERN_BYTES
+                        LD      HL,SELF_TEST_FAILURE_PATTERN
                         LDIR
                         LD      HL,VIDEO_RAM_BASE
                         LD      BC,$40B0
@@ -2249,15 +2245,15 @@ torpedo_record_selected:
                         CALL    INITIALIZE_TORPEDO_OBJECT
                         IN      A,(C)
                         CALL    DECODE_HANDLE_POSITION
-                        SUB     $12
+                        SUB     TORPEDO_AIM_HANDLE_BASE
                         JR      NC,torpedo_aim_nonnegative
                         LD      A,$00
 torpedo_aim_nonnegative:
                         ADD     A,A
-                        CP      $40
+                        CP      TORPEDO_TRAJECTORY_TABLE_BYTES
                         JR      C,torpedo_aim_in_range
-                        LD      A,$3E
-torpedo_aim_in_range:   AND     $3E
+                        LD      A,TORPEDO_TRAJECTORY_LAST_OFFSET
+torpedo_aim_in_range:   AND     TORPEDO_TRAJECTORY_LAST_OFFSET
                         LD      HL,TORPEDO_TRAJECTORY_LEFT_TABLE
                         BIT     STATION_PORT_PARITY_BIT,C
                         JR      Z,torpedo_trajectory_table
@@ -2745,25 +2741,144 @@ clear_super_sub_byte:   LD      (HL),A
                         RET
 
 ;-------------------------------------------------------------------------------
-; $0D48: Left-station torpedo launch X/velocity pairs
+; $0D48-$0DC7: Station torpedo launch X/velocity tables
 ;-------------------------------------------------------------------------------
+; FIRE_TORPEDO decodes the six-bit handle, subtracts $12, clamps the result to
+; 0-$1F, and doubles it to select one two-byte entry.  Byte 0 is the initial
+; X coordinate.  Byte 1 is sign-extended into the low byte of signed 8.8 X
+; velocity.  Handle values below $12 use entry 0; values above $31 use entry 31.
+
 TORPEDO_TRAJECTORY_LEFT_TABLE:
-                        DB      $90,$70,$8A,$6D,$85,$6A,$7F,$67,$7A,$64,$75,$61,$6F,$5E,$6A ; $0D48
-                        DB      $5B,$65,$58,$61,$55,$5C,$52,$57,$4F,$52,$4C,$4E,$49,$49,$46,$44 ; $0D57  [eXaU\RWORLNIIFD
-                        DB      $43,$40,$40,$3B,$3D,$37,$3A,$33,$37,$2E,$34,$2A,$31,$26,$2E,$21 ; $0D67  C  ;=7:37.4*1&.!
-                        DB      $2B,$1D,$28,$19,$25,$15,$22,$10,$1F,$0D,$1C,$08,$19,$04,$16,$00 ; $0D77  +.(.%.".........
-                        DB      $13                                                     ; $0D87
+TORPEDO_TRAJECTORY_LEFT_00:
+                        DB      $90,$70                 ; index $00, handle $12, X=$90, dX=$0070
+TORPEDO_TRAJECTORY_LEFT_01:
+                        DB      $8A,$6D                 ; index $01, handle $13, X=$8A, dX=$006D
+TORPEDO_TRAJECTORY_LEFT_02:
+                        DB      $85,$6A                 ; index $02, handle $14, X=$85, dX=$006A
+TORPEDO_TRAJECTORY_LEFT_03:
+                        DB      $7F,$67                 ; index $03, handle $15, X=$7F, dX=$0067
+TORPEDO_TRAJECTORY_LEFT_04:
+                        DB      $7A,$64                 ; index $04, handle $16, X=$7A, dX=$0064
+TORPEDO_TRAJECTORY_LEFT_05:
+                        DB      $75,$61                 ; index $05, handle $17, X=$75, dX=$0061
+TORPEDO_TRAJECTORY_LEFT_06:
+                        DB      $6F,$5E                 ; index $06, handle $18, X=$6F, dX=$005E
+TORPEDO_TRAJECTORY_LEFT_07:
+                        DB      $6A,$5B                 ; index $07, handle $19, X=$6A, dX=$005B
+TORPEDO_TRAJECTORY_LEFT_08:
+                        DB      $65,$58                 ; index $08, handle $1A, X=$65, dX=$0058
+TORPEDO_TRAJECTORY_LEFT_09:
+                        DB      $61,$55                 ; index $09, handle $1B, X=$61, dX=$0055
+TORPEDO_TRAJECTORY_LEFT_10:
+                        DB      $5C,$52                 ; index $0A, handle $1C, X=$5C, dX=$0052
+TORPEDO_TRAJECTORY_LEFT_11:
+                        DB      $57,$4F                 ; index $0B, handle $1D, X=$57, dX=$004F
+TORPEDO_TRAJECTORY_LEFT_12:
+                        DB      $52,$4C                 ; index $0C, handle $1E, X=$52, dX=$004C
+TORPEDO_TRAJECTORY_LEFT_13:
+                        DB      $4E,$49                 ; index $0D, handle $1F, X=$4E, dX=$0049
+TORPEDO_TRAJECTORY_LEFT_14:
+                        DB      $49,$46                 ; index $0E, handle $20, X=$49, dX=$0046
+TORPEDO_TRAJECTORY_LEFT_15:
+                        DB      $44,$43                 ; index $0F, handle $21, X=$44, dX=$0043
+TORPEDO_TRAJECTORY_LEFT_16:
+                        DB      $40,$40                 ; index $10, handle $22, X=$40, dX=$0040
+TORPEDO_TRAJECTORY_LEFT_17:
+                        DB      $3B,$3D                 ; index $11, handle $23, X=$3B, dX=$003D
+TORPEDO_TRAJECTORY_LEFT_18:
+                        DB      $37,$3A                 ; index $12, handle $24, X=$37, dX=$003A
+TORPEDO_TRAJECTORY_LEFT_19:
+                        DB      $33,$37                 ; index $13, handle $25, X=$33, dX=$0037
+TORPEDO_TRAJECTORY_LEFT_20:
+                        DB      $2E,$34                 ; index $14, handle $26, X=$2E, dX=$0034
+TORPEDO_TRAJECTORY_LEFT_21:
+                        DB      $2A,$31                 ; index $15, handle $27, X=$2A, dX=$0031
+TORPEDO_TRAJECTORY_LEFT_22:
+                        DB      $26,$2E                 ; index $16, handle $28, X=$26, dX=$002E
+TORPEDO_TRAJECTORY_LEFT_23:
+                        DB      $21,$2B                 ; index $17, handle $29, X=$21, dX=$002B
+TORPEDO_TRAJECTORY_LEFT_24:
+                        DB      $1D,$28                 ; index $18, handle $2A, X=$1D, dX=$0028
+TORPEDO_TRAJECTORY_LEFT_25:
+                        DB      $19,$25                 ; index $19, handle $2B, X=$19, dX=$0025
+TORPEDO_TRAJECTORY_LEFT_26:
+                        DB      $15,$22                 ; index $1A, handle $2C, X=$15, dX=$0022
+TORPEDO_TRAJECTORY_LEFT_27:
+                        DB      $10,$1F                 ; index $1B, handle $2D, X=$10, dX=$001F
+TORPEDO_TRAJECTORY_LEFT_28:
+                        DB      $0D,$1C                 ; index $1C, handle $2E, X=$0D, dX=$001C
+TORPEDO_TRAJECTORY_LEFT_29:
+                        DB      $08,$19                 ; index $1D, handle $2F, X=$08, dX=$0019
+TORPEDO_TRAJECTORY_LEFT_30:
+                        DB      $04,$16                 ; index $1E, handle $30, X=$04, dX=$0016
+TORPEDO_TRAJECTORY_LEFT_31:
+                        DB      $00,$13                 ; index $1F, handle $31, X=$00, dX=$0013
 
-;-------------------------------------------------------------------------------
-; $0D88: Right-station torpedo launch X/velocity pairs
-;-------------------------------------------------------------------------------
 TORPEDO_TRAJECTORY_RIGHT_TABLE:
-                        DB      $9B,$00,$96,$FD,$92,$FA,$8E,$F7,$8A,$F4,$86,$F1,$81,$EE,$7D ; $0D88
-                        DB      $EB,$79,$E8,$75,$E5,$70,$E2,$6C,$DF,$68,$DC,$63,$D9,$5F,$D6,$5A ; $0D97  .y.u.p.l.h.c._.Z
-                        DB      $D3,$56,$D0,$51,$CD,$4D,$CD,$48,$CA,$43,$C7,$3E,$C4,$3A,$C1,$35 ; $0DA7  .V.Q.M.H.C.>.:.5
-                        DB      $BE,$30,$BB,$2B,$B8,$25,$B5,$20,$B2,$1B,$AF,$16,$AC,$10,$A9,$0A ; $0DB7  .0.+.%. ........
-                        DB      $A6                                                     ; $0DC7
-
+TORPEDO_TRAJECTORY_RIGHT_00:
+                        DB      $9B,$00                 ; index $00, handle $12, X=$9B, dX=$0000
+TORPEDO_TRAJECTORY_RIGHT_01:
+                        DB      $96,$FD                 ; index $01, handle $13, X=$96, dX=$FFFD
+TORPEDO_TRAJECTORY_RIGHT_02:
+                        DB      $92,$FA                 ; index $02, handle $14, X=$92, dX=$FFFA
+TORPEDO_TRAJECTORY_RIGHT_03:
+                        DB      $8E,$F7                 ; index $03, handle $15, X=$8E, dX=$FFF7
+TORPEDO_TRAJECTORY_RIGHT_04:
+                        DB      $8A,$F4                 ; index $04, handle $16, X=$8A, dX=$FFF4
+TORPEDO_TRAJECTORY_RIGHT_05:
+                        DB      $86,$F1                 ; index $05, handle $17, X=$86, dX=$FFF1
+TORPEDO_TRAJECTORY_RIGHT_06:
+                        DB      $81,$EE                 ; index $06, handle $18, X=$81, dX=$FFEE
+TORPEDO_TRAJECTORY_RIGHT_07:
+                        DB      $7D,$EB                 ; index $07, handle $19, X=$7D, dX=$FFEB
+TORPEDO_TRAJECTORY_RIGHT_08:
+                        DB      $79,$E8                 ; index $08, handle $1A, X=$79, dX=$FFE8
+TORPEDO_TRAJECTORY_RIGHT_09:
+                        DB      $75,$E5                 ; index $09, handle $1B, X=$75, dX=$FFE5
+TORPEDO_TRAJECTORY_RIGHT_10:
+                        DB      $70,$E2                 ; index $0A, handle $1C, X=$70, dX=$FFE2
+TORPEDO_TRAJECTORY_RIGHT_11:
+                        DB      $6C,$DF                 ; index $0B, handle $1D, X=$6C, dX=$FFDF
+TORPEDO_TRAJECTORY_RIGHT_12:
+                        DB      $68,$DC                 ; index $0C, handle $1E, X=$68, dX=$FFDC
+TORPEDO_TRAJECTORY_RIGHT_13:
+                        DB      $63,$D9                 ; index $0D, handle $1F, X=$63, dX=$FFD9
+TORPEDO_TRAJECTORY_RIGHT_14:
+                        DB      $5F,$D6                 ; index $0E, handle $20, X=$5F, dX=$FFD6
+TORPEDO_TRAJECTORY_RIGHT_15:
+                        DB      $5A,$D3                 ; index $0F, handle $21, X=$5A, dX=$FFD3
+TORPEDO_TRAJECTORY_RIGHT_16:
+                        DB      $56,$D0                 ; index $10, handle $22, X=$56, dX=$FFD0
+TORPEDO_TRAJECTORY_RIGHT_17:
+                        DB      $51,$CD                 ; index $11, handle $23, X=$51, dX=$FFCD
+TORPEDO_TRAJECTORY_RIGHT_18:
+                        DB      $4D,$CD                 ; index $12, handle $24, X=$4D, dX=$FFCD
+TORPEDO_TRAJECTORY_RIGHT_19:
+                        DB      $48,$CA                 ; index $13, handle $25, X=$48, dX=$FFCA
+TORPEDO_TRAJECTORY_RIGHT_20:
+                        DB      $43,$C7                 ; index $14, handle $26, X=$43, dX=$FFC7
+TORPEDO_TRAJECTORY_RIGHT_21:
+                        DB      $3E,$C4                 ; index $15, handle $27, X=$3E, dX=$FFC4
+TORPEDO_TRAJECTORY_RIGHT_22:
+                        DB      $3A,$C1                 ; index $16, handle $28, X=$3A, dX=$FFC1
+TORPEDO_TRAJECTORY_RIGHT_23:
+                        DB      $35,$BE                 ; index $17, handle $29, X=$35, dX=$FFBE
+TORPEDO_TRAJECTORY_RIGHT_24:
+                        DB      $30,$BB                 ; index $18, handle $2A, X=$30, dX=$FFBB
+TORPEDO_TRAJECTORY_RIGHT_25:
+                        DB      $2B,$B8                 ; index $19, handle $2B, X=$2B, dX=$FFB8
+TORPEDO_TRAJECTORY_RIGHT_26:
+                        DB      $25,$B5                 ; index $1A, handle $2C, X=$25, dX=$FFB5
+TORPEDO_TRAJECTORY_RIGHT_27:
+                        DB      $20,$B2                 ; index $1B, handle $2D, X=$20, dX=$FFB2
+TORPEDO_TRAJECTORY_RIGHT_28:
+                        DB      $1B,$AF                 ; index $1C, handle $2E, X=$1B, dX=$FFAF
+TORPEDO_TRAJECTORY_RIGHT_29:
+                        DB      $16,$AC                 ; index $1D, handle $2F, X=$16, dX=$FFAC
+TORPEDO_TRAJECTORY_RIGHT_30:
+                        DB      $10,$A9                 ; index $1E, handle $30, X=$10, dX=$FFA9
+TORPEDO_TRAJECTORY_RIGHT_31:
+                        DB      $0A,$A6                 ; index $1F, handle $31, X=$0A, dX=$FFA6
 ;-------------------------------------------------------------------------------
 ; $0DC8: Cyclic surface-target sequence for both target lanes
 ;-------------------------------------------------------------------------------
@@ -2860,108 +2975,1320 @@ INITIAL_RIGHT_TORPEDO_TEMPLATE:
                         DB      EXPAND_COLORS_0_1,$00   ; right set pixels color 1, near frame
 
 ;-------------------------------------------------------------------------------
-; $0E3F: Object bitmap descriptors and animation frames
+; $0E3F-$119E: One-bit object bitmap descriptors and animation frames
 ;-------------------------------------------------------------------------------
+; Each descriptor is: DB source-byte width, row count; then width*rows mask
+; bytes in top-to-bottom, left-to-right order.  Bits are read MSB first.
+; Function Generator expand mode maps each source bit to one two-bit display
+; pixel.  One source byte is eight display pixels but four object X units
+; because the object coordinate mapper doubles X before addressing video RAM.
+;
+; Inline rows use: . = source 0 -> color 0; 1 = source 1 -> OBJECT_COLOR.
+; The bitmap pointer lists reference 26 descriptors.  Two additional blocks
+; at $1044 and $1090 have valid descriptor geometry but no ROM consumer.
 OBJECT_BITMAP_DATA:
-                        DB      $05,$0C,$00,$00,$20,$00,$00,$00                         ; $0E3F
-                        DB      $00,$00,$00,$00,$00,$0C,$E0,$00,$00,$00,$0E,$E3,$F8,$00,$00,$0E ; $0E47  ................
-                        DB      $F3,$80,$00,$1F,$DF,$F7,$DF,$E0,$03,$DF,$F7,$DE,$00,$3F,$FF,$FF ; $0E57  .............?..
-                        DB      $FF,$FF,$3F,$FF,$FF,$FF,$FE,$3F,$FF,$FF,$FF,$FC,$1F,$FF,$FF,$FF ; $0E67  ..?....?........
-                        DB      $F8,$0F,$FF,$FF,$FF,$F0,$04,$0B,$00,$00,$40,$00,$00,$00,$30,$00 ; $0E77  .......... ...0.
-                        DB      $00,$36,$38,$00,$00,$36,$78,$00,$00,$36,$78,$00,$1F,$7E,$79,$F8 ; $0E87  .68..6x..6x..~y.
-                        DB      $07,$7F,$FD,$C0,$3F,$FF,$FF,$FF,$3F,$FF,$FF,$FE,$1F,$FF,$FF,$FC ; $0E97  ....?...?.......
-                        DB      $1F,$FF,$FF,$F8,$05,$0A,$00,$00,$44,$00,$00,$00,$00,$1E,$00,$00 ; $0EA7  ........D.......
-                        DB      $00,$00,$1E,$00,$00,$00,$00,$1E,$F0,$00,$19,$99,$BE,$C0,$00,$3F ; $0EB7  ...............?
-                        DB      $FF,$FF,$FF,$FF,$3F,$FF,$FF,$FF,$FC,$1F,$FF,$FF,$FF,$F8,$1F,$FF ; $0EC7  ....?...........
-                        DB      $FF,$FF,$F0,$0F,$FF,$FF,$FF,$F0,$04,$0A,$04,$00,$01,$00,$04,$00 ; $0ED7  ................
-                        DB      $81,$00,$04,$00,$61,$00,$04,$00,$61,$00,$04,$1F,$E1,$00,$04,$3F ; $0EE7  ....a...a......?
-                        DB      $E1,$00,$3C,$3F,$E1,$3F,$3F,$FF,$FF,$FE,$3F,$FF,$FF,$FC,$1F,$FF ; $0EF7  ..<?.??...?.....
-                        DB      $FF,$F8,$04,$09,$00,$10,$00,$20,$03,$10,$00,$20,$03,$10,$00,$20 ; $0F07  ....... ... ...
-                        DB      $0F,$10,$00,$20,$1F,$10,$00,$20,$3F,$10,$00,$3F,$3F,$FF,$FF,$FE ; $0F17  ... ... ?..??...
-                        DB      $1F,$FF,$FF,$FC,$1F,$FF,$FF,$FC,$03,$05,$00,$0F,$00,$00,$1F,$80 ; $0F27  ................
-                        DB      $00,$FF,$FC,$0F,$FF,$F8,$0F,$FF,$F0,$04,$09,$00,$00,$00,$00,$00 ; $0F37  ................
-                        DB      $00,$06,$00,$00,$00,$04,$00,$00,$00,$3E,$00,$00,$00,$3E,$00,$30 ; $0F47  .........>...>.0
-                        DB      $00,$7E,$00,$3C,$3F,$FF,$FC,$3F,$FF,$FF,$FF,$3F,$FF,$FF,$FF,$04 ; $0F57  .~.<?..?...?....
-                        DB      $08,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$06,$00,$00,$00,$04 ; $0F67  ................
-                        DB      $00,$00,$00,$3E,$00,$00,$00,$3E,$00,$00,$00,$7E,$00,$00,$3F,$FF ; $0F77  ...>...>...~..?.
-                        DB      $FC,$04,$06,$00,$00,$00,$00,$00,$00,$06,$00,$00,$00,$04,$00,$00 ; $0F87  ................
-                        DB      $00,$3E,$00,$00,$00,$3E,$00,$00,$00,$7E,$00,$04,$0D,$00,$00,$00 ; $0F97  .>...>...~......
-                        DB      $04,$00,$00,$00,$8C,$00,$00,$01,$1C,$00,$00,$02,$3C,$24,$00,$06 ; $0FA7  ............<$..
-                        DB      $7C,$72,$00,$0E,$FC,$7B,$00,$7F,$F8,$FF,$80,$7F,$F0,$7F,$8C,$3F ; $0FB7  |r...{.........?
-                        DB      $E0,$3F,$3C,$7F,$C0,$1F,$FC,$7F,$80,$0F,$F8,$FF,$00,$07,$F8,$FF ; $0FC7  .?<.............
-                        DB      $00,$03,$FC,$CC,$00,$00,$9F,$88,$00,$04,$0A,$00,$00,$00,$04,$00 ; $0FD7  ................
-                        DB      $00,$00,$8C,$00,$00,$01,$1C,$00,$00,$02,$3C,$24,$00,$06,$7C,$72 ; $0FE7  ..........<$..|r
-                        DB      $00,$0E,$FC,$7B,$00,$7F,$F8,$FF,$80,$7F,$F0,$7F,$8C,$3F,$E0,$3F ; $0FF7  ...{.........?.?
-                        DB      $3C,$7F,$C0,$04,$07,$00,$00,$00,$04,$00,$00,$00,$8C,$00,$00,$01 ; $1007  <...............
-                        DB      $1C,$00,$00,$02,$3C,$24,$00,$06,$7C,$72,$00,$0E,$FC,$7B,$00,$7F ; $1017  ....<$..|r...{..
-                        DB      $F8,$04,$04,$00,$00,$00,$04,$00,$00,$00,$8C,$00,$00,$01,$1C,$00 ; $1027  ................
-                        DB      $00,$02,$3C,$04,$02,$00,$00,$00,$04,$00,$00,$00,$8C,$02,$0C,$08 ; $1037  ..<.............
-                        DB      $00,$0C,$40,$0E,$80,$3F,$00,$1F,$88,$0F,$DC,$07,$FE,$03,$FC,$01 ; $1047  .. ..?..........
-                        DB      $F8,$00,$FC,$00,$78,$00,$20,$02,$09,$08,$00,$0C,$40,$0E,$80,$3F ; $1057  ....x. ..... ..?
-                        DB      $00,$1F,$88,$0F,$DC,$07,$FE,$03,$FC,$01,$F8,$02,$06,$08,$00,$0C ; $1067  ................
-                        DB      $40,$0E,$80,$3F,$00,$1F,$88,$0F,$DC,$02,$04,$08,$00,$0C,$40,$0E ; $1077   ..?.......... .
-                        DB      $80,$3F,$00,$02,$02,$08,$00,$0C,$40,$02,$0F,$21,$2A,$11,$46,$00 ; $1087  .?...... ..!*.F.
-                        DB      $48,$89,$01,$45,$22,$31,$02,$18,$18,$0C,$39,$24,$60,$A4,$00,$20 ; $1097  H..E"1....9$`..
-                        DB      $04,$04,$42,$0C,$E1,$1C,$F0,$3F,$F1,$03,$05,$E0,$40,$21,$3C,$10 ; $10A7  ..B....?.... !<.
-                        DB      $C2,$07,$01,$8C,$C0,$44,$F0,$0F,$FF,$F0,$04,$0B,$20,$62,$08,$48 ; $10B7  .....D...... b.H
-                        DB      $10,$10,$44,$41,$0C,$00,$82,$22,$07,$00,$80,$4C,$40,$18,$00,$58 ; $10C7  ..DA..."...L ..X
-                        DB      $08,$11,$08,$00,$0F,$18,$00,$FF,$0F,$C0,$07,$FE,$0F,$F0,$1F,$FC ; $10D7  ................
-                        DB      $07,$FF,$FF,$F8,$07,$FF,$FF,$F0,$05,$0C,$40,$01,$10,$80,$41,$20 ; $10E7  .......... ...A
-                        DB      $02,$08,$84,$42,$10,$C2,$00,$90,$8C,$18,$44,$10,$00,$9C,$06,$20 ; $10F7  ...B......D....
-                        DB      $90,$89,$00,$00,$20,$81,$30,$00,$18,$00,$40,$00,$0F,$3E,$00,$00 ; $1107  .... .0... ..>..
-                        DB      $00,$0E,$3F,$80,$00,$00,$FC,$3F,$E1,$F0,$1F,$F8,$1F,$FF,$FF,$FF ; $1117  ..?....?........
-                        DB      $F0,$1F,$FF,$FF,$FF,$E0,$01,$15,$20,$70,$70,$70,$70,$70,$70,$70 ; $1127  ........ ppppppp
-                        DB      $70,$70,$70,$70,$70,$20,$20,$20,$70,$00,$00,$00,$00,$00,$00,$00 ; $1137  ppppp   p.......
-                        DB      $01,$15,$60,$60,$60,$60,$60,$60,$60,$00,$60,$00,$00,$00,$00,$00 ; $1147  ..```````.`.....
-                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$01,$0B,$40,$40,$40 ; $1157  .............
-                        DB      $40,$40,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00 ; $1167    ..............
-                        DB      $00,$00,$00,$00,$01,$10,$08,$5D,$3E,$7F,$3E,$1C,$2A,$08,$00,$08 ; $1177  .......]>.>.*...
-                        DB      $00,$10,$00,$00,$20,$00,$01,$10,$91,$52,$44,$28,$18,$25,$A4,$18 ; $1187  .... ....RD(.%..
-                        DB      $28,$44,$42,$92,$09,$10,$08,$10                                 ; $1197  (DB.....
 
+;*******************************************************************************
+; BITMAP_WARSHIP_A
+; 5 source bytes/row = 40 expanded display pixels = 20 object X units, 12 rows
+; Source mask size: 60 bytes ($3C)
+; Descriptor total size: 62 bytes ($3E), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_WARSHIP_A:
+                        DB      $05,$0C           ; source width bytes, height rows
+                        DB      $00,$00,$20,$00,$00     ; row 00: . . . . . . . . . . . . . . . . . . 1 . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$00,$00,$00     ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$0C,$E0,$00,$00     ; row 02: . . . . . . . . . . . . 1 1 . . 1 1 1 . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$0E,$E3,$F8,$00     ; row 03: . . . . . . . . . . . . 1 1 1 . 1 1 1 . . . 1 1 1 1 1 1 1 . . . . . . . . . . .
+                        DB      $00,$0E,$F3,$80,$00     ; row 04: . . . . . . . . . . . . 1 1 1 . 1 1 1 1 . . 1 1 1 . . . . . . . . . . . . . . .
+                        DB      $1F,$DF,$F7,$DF,$E0     ; row 05: . . . 1 1 1 1 1 1 1 . 1 1 1 1 1 1 1 1 1 . 1 1 1 1 1 . 1 1 1 1 1 1 1 1 . . . . .
+                        DB      $03,$DF,$F7,$DE,$00     ; row 06: . . . . . . 1 1 1 1 . 1 1 1 1 1 1 1 1 1 . 1 1 1 1 1 . 1 1 1 1 . . . . . . . . .
+                        DB      $3F,$FF,$FF,$FF,$FF     ; row 07: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+                        DB      $3F,$FF,$FF,$FF,$FE     ; row 08: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $3F,$FF,$FF,$FF,$FC     ; row 09: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $1F,$FF,$FF,$FF,$F8     ; row 10: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $0F,$FF,$FF,$FF,$F0     ; row 11: . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+
+;*******************************************************************************
+; BITMAP_WARSHIP_B
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 11 rows
+; Source mask size: 44 bytes ($2C)
+; Descriptor total size: 46 bytes ($2E), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_B_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_WARSHIP_B:
+                        DB      $04,$0B           ; source width bytes, height rows
+                        DB      $00,$00,$40,$00         ; row 00: . . . . . . . . . . . . . . . . . 1 . . . . . . . . . . . . . .
+                        DB      $00,$00,$30,$00         ; row 01: . . . . . . . . . . . . . . . . . . 1 1 . . . . . . . . . . . .
+                        DB      $00,$36,$38,$00         ; row 02: . . . . . . . . . . 1 1 . 1 1 . . . 1 1 1 . . . . . . . . . . .
+                        DB      $00,$36,$78,$00         ; row 03: . . . . . . . . . . 1 1 . 1 1 . . 1 1 1 1 . . . . . . . . . . .
+                        DB      $00,$36,$78,$00         ; row 04: . . . . . . . . . . 1 1 . 1 1 . . 1 1 1 1 . . . . . . . . . . .
+                        DB      $1F,$7E,$79,$F8         ; row 05: . . . 1 1 1 1 1 . 1 1 1 1 1 1 . . 1 1 1 1 . . 1 1 1 1 1 1 . . .
+                        DB      $07,$7F,$FD,$C0         ; row 06: . . . . . 1 1 1 . 1 1 1 1 1 1 1 1 1 1 1 1 1 . 1 1 1 . . . . . .
+                        DB      $3F,$FF,$FF,$FF         ; row 07: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+                        DB      $3F,$FF,$FF,$FE         ; row 08: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $1F,$FF,$FF,$FC         ; row 09: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $1F,$FF,$FF,$F8         ; row 10: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+
+;*******************************************************************************
+; BITMAP_WARSHIP_C
+; 5 source bytes/row = 40 expanded display pixels = 20 object X units, 10 rows
+; Source mask size: 50 bytes ($32)
+; Descriptor total size: 52 bytes ($34), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_WARSHIP_C:
+                        DB      $05,$0A           ; source width bytes, height rows
+                        DB      $00,$00,$44,$00,$00     ; row 00: . . . . . . . . . . . . . . . . . 1 . . . 1 . . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$1E,$00,$00     ; row 01: . . . . . . . . . . . . . . . . . . . 1 1 1 1 . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$1E,$00,$00     ; row 02: . . . . . . . . . . . . . . . . . . . 1 1 1 1 . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$1E,$F0,$00     ; row 03: . . . . . . . . . . . . . . . . . . . 1 1 1 1 . 1 1 1 1 . . . . . . . . . . . .
+                        DB      $19,$99,$BE,$C0,$00     ; row 04: . . . 1 1 . . 1 1 . . 1 1 . . 1 1 . 1 1 1 1 1 . 1 1 . . . . . . . . . . . . . .
+                        DB      $3F,$FF,$FF,$FF,$FF     ; row 05: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+                        DB      $3F,$FF,$FF,$FF,$FC     ; row 06: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $1F,$FF,$FF,$FF,$F8     ; row 07: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $1F,$FF,$FF,$FF,$F0     ; row 08: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+                        DB      $0F,$FF,$FF,$FF,$F0     ; row 09: . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+
+;*******************************************************************************
+; BITMAP_FREIGHTER_A
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 10 rows
+; Source mask size: 40 bytes ($28)
+; Descriptor total size: 42 bytes ($2A), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: FREIGHTER_A_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_FREIGHTER_A:
+                        DB      $04,$0A           ; source width bytes, height rows
+                        DB      $04,$00,$01,$00         ; row 00: . . . . . 1 . . . . . . . . . . . . . . . . . 1 . . . . . . . .
+                        DB      $04,$00,$81,$00         ; row 01: . . . . . 1 . . . . . . . . . . 1 . . . . . . 1 . . . . . . . .
+                        DB      $04,$00,$61,$00         ; row 02: . . . . . 1 . . . . . . . . . . . 1 1 . . . . 1 . . . . . . . .
+                        DB      $04,$00,$61,$00         ; row 03: . . . . . 1 . . . . . . . . . . . 1 1 . . . . 1 . . . . . . . .
+                        DB      $04,$1F,$E1,$00         ; row 04: . . . . . 1 . . . . . 1 1 1 1 1 1 1 1 . . . . 1 . . . . . . . .
+                        DB      $04,$3F,$E1,$00         ; row 05: . . . . . 1 . . . . 1 1 1 1 1 1 1 1 1 . . . . 1 . . . . . . . .
+                        DB      $3C,$3F,$E1,$3F         ; row 06: . . 1 1 1 1 . . . . 1 1 1 1 1 1 1 1 1 . . . . 1 . . 1 1 1 1 1 1
+                        DB      $3F,$FF,$FF,$FE         ; row 07: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $3F,$FF,$FF,$FC         ; row 08: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $1F,$FF,$FF,$F8         ; row 09: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+
+;*******************************************************************************
+; BITMAP_FREIGHTER_B
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 9 rows
+; Source mask size: 36 bytes ($24)
+; Descriptor total size: 38 bytes ($26), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: FREIGHTER_B_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_FREIGHTER_B:
+                        DB      $04,$09           ; source width bytes, height rows
+                        DB      $00,$10,$00,$20         ; row 00: . . . . . . . . . . . 1 . . . . . . . . . . . . . . 1 . . . . .
+                        DB      $03,$10,$00,$20         ; row 01: . . . . . . 1 1 . . . 1 . . . . . . . . . . . . . . 1 . . . . .
+                        DB      $03,$10,$00,$20         ; row 02: . . . . . . 1 1 . . . 1 . . . . . . . . . . . . . . 1 . . . . .
+                        DB      $0F,$10,$00,$20         ; row 03: . . . . 1 1 1 1 . . . 1 . . . . . . . . . . . . . . 1 . . . . .
+                        DB      $1F,$10,$00,$20         ; row 04: . . . 1 1 1 1 1 . . . 1 . . . . . . . . . . . . . . 1 . . . . .
+                        DB      $3F,$10,$00,$3F         ; row 05: . . 1 1 1 1 1 1 . . . 1 . . . . . . . . . . . . . . 1 1 1 1 1 1
+                        DB      $3F,$FF,$FF,$FE         ; row 06: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $1F,$FF,$FF,$FC         ; row 07: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $1F,$FF,$FF,$FC         ; row 08: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+
+;*******************************************************************************
+; BITMAP_PT_BOAT
+; 3 source bytes/row = 24 expanded display pixels = 12 object X units, 5 rows
+; Source mask size: 15 bytes ($0F)
+; Descriptor total size: 17 bytes ($11), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: PT_BOAT_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_PT_BOAT:
+                        DB      $03,$05           ; source width bytes, height rows
+                        DB      $00,$0F,$00             ; row 00: . . . . . . . . . . . . 1 1 1 1 . . . . . . . .
+                        DB      $00,$1F,$80             ; row 01: . . . . . . . . . . . 1 1 1 1 1 1 . . . . . . .
+                        DB      $00,$FF,$FC             ; row 02: . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $0F,$FF,$F8             ; row 03: . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $0F,$FF,$F0             ; row 04: . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+
+;*******************************************************************************
+; BITMAP_SUPER_SUB_SURFACED
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 9 rows
+; Source mask size: 36 bytes ($24)
+; Descriptor total size: 38 bytes ($26), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: SUPER_SUB_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_SUPER_SUB_SURFACED:
+                        DB      $04,$09           ; source width bytes, height rows
+                        DB      $00,$00,$00,$00         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$06,$00         ; row 01: . . . . . . . . . . . . . . . . . . . . . 1 1 . . . . . . . . .
+                        DB      $00,$00,$04,$00         ; row 02: . . . . . . . . . . . . . . . . . . . . . 1 . . . . . . . . . .
+                        DB      $00,$00,$3E,$00         ; row 03: . . . . . . . . . . . . . . . . . . 1 1 1 1 1 . . . . . . . . .
+                        DB      $00,$00,$3E,$00         ; row 04: . . . . . . . . . . . . . . . . . . 1 1 1 1 1 . . . . . . . . .
+                        DB      $30,$00,$7E,$00         ; row 05: . . 1 1 . . . . . . . . . . . . . 1 1 1 1 1 1 . . . . . . . . .
+                        DB      $3C,$3F,$FF,$FC         ; row 06: . . 1 1 1 1 . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $3F,$FF,$FF,$FF         ; row 07: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+                        DB      $3F,$FF,$FF,$FF         ; row 08: . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; BITMAP_SUPER_SUB_DIVE_1
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 8 rows
+; Source mask size: 32 bytes ($20)
+; Descriptor total size: 34 bytes ($22), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: SUPER_SUB_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_SUPER_SUB_DIVE_1:
+                        DB      $04,$08           ; source width bytes, height rows
+                        DB      $00,$00,$00,$00         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$00,$00         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$06,$00         ; row 02: . . . . . . . . . . . . . . . . . . . . . 1 1 . . . . . . . . .
+                        DB      $00,$00,$04,$00         ; row 03: . . . . . . . . . . . . . . . . . . . . . 1 . . . . . . . . . .
+                        DB      $00,$00,$3E,$00         ; row 04: . . . . . . . . . . . . . . . . . . 1 1 1 1 1 . . . . . . . . .
+                        DB      $00,$00,$3E,$00         ; row 05: . . . . . . . . . . . . . . . . . . 1 1 1 1 1 . . . . . . . . .
+                        DB      $00,$00,$7E,$00         ; row 06: . . . . . . . . . . . . . . . . . 1 1 1 1 1 1 . . . . . . . . .
+                        DB      $00,$3F,$FF,$FC         ; row 07: . . . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . .
+
+;*******************************************************************************
+; BITMAP_SUPER_SUB_DIVE_2
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 6 rows
+; Source mask size: 24 bytes ($18)
+; Descriptor total size: 26 bytes ($1A), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: SUPER_SUB_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_SUPER_SUB_DIVE_2:
+                        DB      $04,$06           ; source width bytes, height rows
+                        DB      $00,$00,$00,$00         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . . .
+                        DB      $00,$00,$06,$00         ; row 01: . . . . . . . . . . . . . . . . . . . . . 1 1 . . . . . . . . .
+                        DB      $00,$00,$04,$00         ; row 02: . . . . . . . . . . . . . . . . . . . . . 1 . . . . . . . . . .
+                        DB      $00,$00,$3E,$00         ; row 03: . . . . . . . . . . . . . . . . . . 1 1 1 1 1 . . . . . . . . .
+                        DB      $00,$00,$3E,$00         ; row 04: . . . . . . . . . . . . . . . . . . 1 1 1 1 1 . . . . . . . . .
+                        DB      $00,$00,$7E,$00         ; row 05: . . . . . . . . . . . . . . . . . 1 1 1 1 1 1 . . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_2
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 13 rows
+; Source mask size: 52 bytes ($34)
+; Descriptor total size: 54 bytes ($36), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE, WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_2:
+                        DB      $04,$0D           ; source width bytes, height rows
+                        DB      $00,$00,$00,$04         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1 . .
+                        DB      $00,$00,$00,$8C         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 . .
+                        DB      $00,$00,$01,$1C         ; row 02: . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 . .
+                        DB      $00,$00,$02,$3C         ; row 03: . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 1 . .
+                        DB      $24,$00,$06,$7C         ; row 04: . . 1 . . 1 . . . . . . . . . . . . . . . 1 1 . . 1 1 1 1 1 . .
+                        DB      $72,$00,$0E,$FC         ; row 05: . 1 1 1 . . 1 . . . . . . . . . . . . . 1 1 1 . 1 1 1 1 1 1 . .
+                        DB      $7B,$00,$7F,$F8         ; row 06: . 1 1 1 1 . 1 1 . . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $FF,$80,$7F,$F0         ; row 07: 1 1 1 1 1 1 1 1 1 . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 . . . .
+                        DB      $7F,$8C,$3F,$E0         ; row 08: . 1 1 1 1 1 1 1 1 . . . 1 1 . . . . 1 1 1 1 1 1 1 1 1 . . . . .
+                        DB      $3F,$3C,$7F,$C0         ; row 09: . . 1 1 1 1 1 1 . . 1 1 1 1 . . . 1 1 1 1 1 1 1 1 1 . . . . . .
+                        DB      $1F,$FC,$7F,$80         ; row 10: . . . 1 1 1 1 1 1 1 1 1 1 1 . . . 1 1 1 1 1 1 1 1 . . . . . . .
+                        DB      $0F,$F8,$FF,$00         ; row 11: . . . . 1 1 1 1 1 1 1 1 1 . . . 1 1 1 1 1 1 1 1 . . . . . . . .
+                        DB      $07,$F8,$FF,$00         ; row 12: . . . . . 1 1 1 1 1 1 1 1 . . . 1 1 1 1 1 1 1 1 . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_2_UNUSED_ROWS
+; Two 4-byte row-shaped values follow frame 2, but its descriptor height is
+; 13 and the renderer stops at $0FD7.  No pointer targets these bytes.
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_2_UNUSED_ROWS:
+                        DB      $03,$FC,$CC,$00     ; unused row 00: . . . . . . 1 1 1 1 1 1 1 1 . . 1 1 . . 1 1 . . . . . . . . . .
+                        DB      $00,$9F,$88,$00     ; unused row 01: . . . . . . . . 1 . . 1 1 1 1 1 1 . . . 1 . . . . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_3
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 10 rows
+; Source mask size: 40 bytes ($28)
+; Descriptor total size: 42 bytes ($2A), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE, WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_3:
+                        DB      $04,$0A           ; source width bytes, height rows
+                        DB      $00,$00,$00,$04         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1 . .
+                        DB      $00,$00,$00,$8C         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 . .
+                        DB      $00,$00,$01,$1C         ; row 02: . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 . .
+                        DB      $00,$00,$02,$3C         ; row 03: . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 1 . .
+                        DB      $24,$00,$06,$7C         ; row 04: . . 1 . . 1 . . . . . . . . . . . . . . . 1 1 . . 1 1 1 1 1 . .
+                        DB      $72,$00,$0E,$FC         ; row 05: . 1 1 1 . . 1 . . . . . . . . . . . . . 1 1 1 . 1 1 1 1 1 1 . .
+                        DB      $7B,$00,$7F,$F8         ; row 06: . 1 1 1 1 . 1 1 . . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $FF,$80,$7F,$F0         ; row 07: 1 1 1 1 1 1 1 1 1 . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 . . . .
+                        DB      $7F,$8C,$3F,$E0         ; row 08: . 1 1 1 1 1 1 1 1 . . . 1 1 . . . . 1 1 1 1 1 1 1 1 1 . . . . .
+                        DB      $3F,$3C,$7F,$C0         ; row 09: . . 1 1 1 1 1 1 . . 1 1 1 1 . . . 1 1 1 1 1 1 1 1 1 . . . . . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_4
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 7 rows
+; Source mask size: 28 bytes ($1C)
+; Descriptor total size: 30 bytes ($1E), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE, WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_4:
+                        DB      $04,$07           ; source width bytes, height rows
+                        DB      $00,$00,$00,$04         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1 . .
+                        DB      $00,$00,$00,$8C         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 . .
+                        DB      $00,$00,$01,$1C         ; row 02: . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 . .
+                        DB      $00,$00,$02,$3C         ; row 03: . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 1 . .
+                        DB      $24,$00,$06,$7C         ; row 04: . . 1 . . 1 . . . . . . . . . . . . . . . 1 1 . . 1 1 1 1 1 . .
+                        DB      $72,$00,$0E,$FC         ; row 05: . 1 1 1 . . 1 . . . . . . . . . . . . . 1 1 1 . 1 1 1 1 1 1 . .
+                        DB      $7B,$00,$7F,$F8         ; row 06: . 1 1 1 1 . 1 1 . . . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_5
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 4 rows
+; Source mask size: 16 bytes ($10)
+; Descriptor total size: 18 bytes ($12), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE, WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_5:
+                        DB      $04,$04           ; source width bytes, height rows
+                        DB      $00,$00,$00,$04         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1 . .
+                        DB      $00,$00,$00,$8C         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 . .
+                        DB      $00,$00,$01,$1C         ; row 02: . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 . .
+                        DB      $00,$00,$02,$3C         ; row 03: . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 1 1 . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_6
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 2 rows
+; Source mask size: 8 bytes ($08)
+; Descriptor total size: 10 bytes ($0A), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE, WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_6:
+                        DB      $04,$02           ; source width bytes, height rows
+                        DB      $00,$00,$00,$04         ; row 00: . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1 . .
+                        DB      $00,$00,$00,$8C         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 . .
+
+;*******************************************************************************
+; UNREFERENCED_BITMAP_1044
+; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 12 rows
+; Source mask size: 24 bytes ($18)
+; Descriptor total size: 26 bytes ($1A), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: No pointer or native-code consumer in the canonical ROM
+;*******************************************************************************
+UNREFERENCED_BITMAP_1044:
+                        DB      $02,$0C           ; source width bytes, height rows
+                        DB      $08,$00                 ; row 00: . . . . 1 . . . . . . . . . . .
+                        DB      $0C,$40                 ; row 01: . . . . 1 1 . . . 1 . . . . . .
+                        DB      $0E,$80                 ; row 02: . . . . 1 1 1 . 1 . . . . . . .
+                        DB      $3F,$00                 ; row 03: . . 1 1 1 1 1 1 . . . . . . . .
+                        DB      $1F,$88                 ; row 04: . . . 1 1 1 1 1 1 . . . 1 . . .
+                        DB      $0F,$DC                 ; row 05: . . . . 1 1 1 1 1 1 . 1 1 1 . .
+                        DB      $07,$FE                 ; row 06: . . . . . 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $03,$FC                 ; row 07: . . . . . . 1 1 1 1 1 1 1 1 . .
+                        DB      $01,$F8                 ; row 08: . . . . . . . 1 1 1 1 1 1 . . .
+                        DB      $00,$FC                 ; row 09: . . . . . . . . 1 1 1 1 1 1 . .
+                        DB      $00,$78                 ; row 10: . . . . . . . . . 1 1 1 1 . . .
+                        DB      $00,$20                 ; row 11: . . . . . . . . . . 1 . . . . .
+
+;*******************************************************************************
+; BITMAP_MEDIUM_HIT_FRAME_2
+; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 9 rows
+; Source mask size: 18 bytes ($12)
+; Descriptor total size: 20 bytes ($14), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_B_BITMAP_SEQUENCE, FREIGHTER_A_BITMAP_SEQUENCE, FREIGHTER_B_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_MEDIUM_HIT_FRAME_2:
+                        DB      $02,$09           ; source width bytes, height rows
+                        DB      $08,$00                 ; row 00: . . . . 1 . . . . . . . . . . .
+                        DB      $0C,$40                 ; row 01: . . . . 1 1 . . . 1 . . . . . .
+                        DB      $0E,$80                 ; row 02: . . . . 1 1 1 . 1 . . . . . . .
+                        DB      $3F,$00                 ; row 03: . . 1 1 1 1 1 1 . . . . . . . .
+                        DB      $1F,$88                 ; row 04: . . . 1 1 1 1 1 1 . . . 1 . . .
+                        DB      $0F,$DC                 ; row 05: . . . . 1 1 1 1 1 1 . 1 1 1 . .
+                        DB      $07,$FE                 ; row 06: . . . . . 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $03,$FC                 ; row 07: . . . . . . 1 1 1 1 1 1 1 1 . .
+                        DB      $01,$F8                 ; row 08: . . . . . . . 1 1 1 1 1 1 . . .
+
+;*******************************************************************************
+; BITMAP_MEDIUM_HIT_FRAME_3
+; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 6 rows
+; Source mask size: 12 bytes ($0C)
+; Descriptor total size: 14 bytes ($0E), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_B_BITMAP_SEQUENCE, FREIGHTER_A_BITMAP_SEQUENCE, FREIGHTER_B_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_MEDIUM_HIT_FRAME_3:
+                        DB      $02,$06           ; source width bytes, height rows
+                        DB      $08,$00                 ; row 00: . . . . 1 . . . . . . . . . . .
+                        DB      $0C,$40                 ; row 01: . . . . 1 1 . . . 1 . . . . . .
+                        DB      $0E,$80                 ; row 02: . . . . 1 1 1 . 1 . . . . . . .
+                        DB      $3F,$00                 ; row 03: . . 1 1 1 1 1 1 . . . . . . . .
+                        DB      $1F,$88                 ; row 04: . . . 1 1 1 1 1 1 . . . 1 . . .
+                        DB      $0F,$DC                 ; row 05: . . . . 1 1 1 1 1 1 . 1 1 1 . .
+
+;*******************************************************************************
+; BITMAP_SMALL_HIT_FRAME_2
+; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 4 rows
+; Source mask size: 8 bytes ($08)
+; Descriptor total size: 10 bytes ($0A), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_B/FREIGHTER_A/FREIGHTER_B/PT_BOAT/SUPER_SUB sequences
+;*******************************************************************************
+BITMAP_SMALL_HIT_FRAME_2:
+                        DB      $02,$04           ; source width bytes, height rows
+                        DB      $08,$00                 ; row 00: . . . . 1 . . . . . . . . . . .
+                        DB      $0C,$40                 ; row 01: . . . . 1 1 . . . 1 . . . . . .
+                        DB      $0E,$80                 ; row 02: . . . . 1 1 1 . 1 . . . . . . .
+                        DB      $3F,$00                 ; row 03: . . 1 1 1 1 1 1 . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_SMALL_HIT_FRAME_3
+; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 2 rows
+; Source mask size: 4 bytes ($04)
+; Descriptor total size: 6 bytes ($06), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_B/FREIGHTER_A/FREIGHTER_B/PT_BOAT/SUPER_SUB sequences
+;*******************************************************************************
+BITMAP_SMALL_HIT_FRAME_3:
+                        DB      $02,$02           ; source width bytes, height rows
+                        DB      $08,$00                 ; row 00: . . . . 1 . . . . . . . . . . .
+                        DB      $0C,$40                 ; row 01: . . . . 1 1 . . . 1 . . . . . .
+
+;*******************************************************************************
+; UNREFERENCED_BITMAP_1090
+; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 15 rows
+; Source mask size: 30 bytes ($1E)
+; Descriptor total size: 32 bytes ($20), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: No pointer or native-code consumer in the canonical ROM
+;*******************************************************************************
+UNREFERENCED_BITMAP_1090:
+                        DB      $02,$0F           ; source width bytes, height rows
+                        DB      $21,$2A                 ; row 00: . . 1 . . . . 1 . . 1 . 1 . 1 .
+                        DB      $11,$46                 ; row 01: . . . 1 . . . 1 . 1 . . . 1 1 .
+                        DB      $00,$48                 ; row 02: . . . . . . . . . 1 . . 1 . . .
+                        DB      $89,$01                 ; row 03: 1 . . . 1 . . 1 . . . . . . . 1
+                        DB      $45,$22                 ; row 04: . 1 . . . 1 . 1 . . 1 . . . 1 .
+                        DB      $31,$02                 ; row 05: . . 1 1 . . . 1 . . . . . . 1 .
+                        DB      $18,$18                 ; row 06: . . . 1 1 . . . . . . 1 1 . . .
+                        DB      $0C,$39                 ; row 07: . . . . 1 1 . . . . 1 1 1 . . 1
+                        DB      $24,$60                 ; row 08: . . 1 . . 1 . . . 1 1 . . . . .
+                        DB      $A4,$00                 ; row 09: 1 . 1 . . 1 . . . . . . . . . .
+                        DB      $20,$04                 ; row 10: . . 1 . . . . . . . . . . 1 . .
+                        DB      $04,$42                 ; row 11: . . . . . 1 . . . 1 . . . . 1 .
+                        DB      $0C,$E1                 ; row 12: . . . . 1 1 . . 1 1 1 . . . . 1
+                        DB      $1C,$F0                 ; row 13: . . . 1 1 1 . . 1 1 1 1 . . . .
+                        DB      $3F,$F1                 ; row 14: . . 1 1 1 1 1 1 1 1 1 1 . . . 1
+
+;*******************************************************************************
+; BITMAP_SMALL_HIT_FRAME_1
+; 3 source bytes/row = 24 expanded display pixels = 12 object X units, 5 rows
+; Source mask size: 15 bytes ($0F)
+; Descriptor total size: 17 bytes ($11), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: PT_BOAT_BITMAP_SEQUENCE, SUPER_SUB_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_SMALL_HIT_FRAME_1:
+                        DB      $03,$05           ; source width bytes, height rows
+                        DB      $E0,$40,$21             ; row 00: 1 1 1 . . . . . . 1 . . . . . . . . 1 . . . . 1
+                        DB      $3C,$10,$C2             ; row 01: . . 1 1 1 1 . . . . . 1 . . . . 1 1 . . . . 1 .
+                        DB      $07,$01,$8C             ; row 02: . . . . . 1 1 1 . . . . . . . 1 1 . . . 1 1 . .
+                        DB      $C0,$44,$F0             ; row 03: 1 1 . . . . . . . 1 . . . 1 . . 1 1 1 1 . . . .
+                        DB      $0F,$FF,$F0             ; row 04: . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+
+;*******************************************************************************
+; BITMAP_MEDIUM_HIT_FRAME_1
+; 4 source bytes/row = 32 expanded display pixels = 16 object X units, 11 rows
+; Source mask size: 44 bytes ($2C)
+; Descriptor total size: 46 bytes ($2E), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_B_BITMAP_SEQUENCE, FREIGHTER_A_BITMAP_SEQUENCE, FREIGHTER_B_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_MEDIUM_HIT_FRAME_1:
+                        DB      $04,$0B           ; source width bytes, height rows
+                        DB      $20,$62,$08,$48         ; row 00: . . 1 . . . . . . 1 1 . . . 1 . . . . . 1 . . . . 1 . . 1 . . .
+                        DB      $10,$10,$44,$41         ; row 01: . . . 1 . . . . . . . 1 . . . . . 1 . . . 1 . . . 1 . . . . . 1
+                        DB      $0C,$00,$82,$22         ; row 02: . . . . 1 1 . . . . . . . . . . 1 . . . . . 1 . . . 1 . . . 1 .
+                        DB      $07,$00,$80,$4C         ; row 03: . . . . . 1 1 1 . . . . . . . . 1 . . . . . . . . 1 . . 1 1 . .
+                        DB      $40,$18,$00,$58         ; row 04: . 1 . . . . . . . . . 1 1 . . . . . . . . . . . . 1 . 1 1 . . .
+                        DB      $08,$11,$08,$00         ; row 05: . . . . 1 . . . . . . 1 . . . 1 . . . . 1 . . . . . . . . . . .
+                        DB      $0F,$18,$00,$FF         ; row 06: . . . . 1 1 1 1 . . . 1 1 . . . . . . . . . . . 1 1 1 1 1 1 1 1
+                        DB      $0F,$C0,$07,$FE         ; row 07: . . . . 1 1 1 1 1 1 . . . . . . . . . . . 1 1 1 1 1 1 1 1 1 1 .
+                        DB      $0F,$F0,$1F,$FC         ; row 08: . . . . 1 1 1 1 1 1 1 1 . . . . . . . 1 1 1 1 1 1 1 1 1 1 1 . .
+                        DB      $07,$FF,$FF,$F8         ; row 09: . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $07,$FF,$FF,$F0         ; row 10: . . . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+
+;*******************************************************************************
+; BITMAP_LARGE_HIT_FRAME_1
+; 5 source bytes/row = 40 expanded display pixels = 20 object X units, 12 rows
+; Source mask size: 60 bytes ($3C)
+; Descriptor total size: 62 bytes ($3E), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: WARSHIP_A_BITMAP_SEQUENCE, WARSHIP_C_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_LARGE_HIT_FRAME_1:
+                        DB      $05,$0C           ; source width bytes, height rows
+                        DB      $40,$01,$10,$80,$41     ; row 00: . 1 . . . . . . . . . . . . . 1 . . . 1 . . . . 1 . . . . . . . . 1 . . . . . 1
+                        DB      $20,$02,$08,$84,$42     ; row 01: . . 1 . . . . . . . . . . . 1 . . . . . 1 . . . 1 . . . . 1 . . . 1 . . . . 1 .
+                        DB      $10,$C2,$00,$90,$8C     ; row 02: . . . 1 . . . . 1 1 . . . . 1 . . . . . . . . . 1 . . 1 . . . . 1 . . . 1 1 . .
+                        DB      $18,$44,$10,$00,$9C     ; row 03: . . . 1 1 . . . . 1 . . . 1 . . . . . 1 . . . . . . . . . . . . 1 . . 1 1 1 . .
+                        DB      $06,$20,$90,$89,$00     ; row 04: . . . . . 1 1 . . . 1 . . . . . 1 . . 1 . . . . 1 . . . 1 . . 1 . . . . . . . .
+                        DB      $00,$20,$81,$30,$00     ; row 05: . . . . . . . . . . 1 . . . . . 1 . . . . . . 1 . . 1 1 . . . . . . . . . . . .
+                        DB      $18,$00,$40,$00,$0F     ; row 06: . . . 1 1 . . . . . . . . . . . . 1 . . . . . . . . . . . . . . . . . . 1 1 1 1
+                        DB      $3E,$00,$00,$00,$0E     ; row 07: . . 1 1 1 1 1 . . . . . . . . . . . . . . . . . . . . . . . . . . . . . 1 1 1 .
+                        DB      $3F,$80,$00,$00,$FC     ; row 08: . . 1 1 1 1 1 1 1 . . . . . . . . . . . . . . . . . . . . . . . 1 1 1 1 1 1 . .
+                        DB      $3F,$E1,$F0,$1F,$F8     ; row 09: . . 1 1 1 1 1 1 1 1 1 . . . . 1 1 1 1 1 . . . . . . . 1 1 1 1 1 1 1 1 1 1 . . .
+                        DB      $1F,$FF,$FF,$FF,$F0     ; row 10: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . .
+                        DB      $1F,$FF,$FF,$FF,$E0     ; row 11: . . . 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 1 . . . . .
+
+;*******************************************************************************
+; BITMAP_TORPEDO_NEAR
+; 1 source bytes/row = 8 expanded display pixels = 4 object X units, 21 rows
+; Source mask size: 21 bytes ($15)
+; Descriptor total size: 23 bytes ($17), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: TORPEDO_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_TORPEDO_NEAR:
+                        DB      $01,$15           ; source width bytes, height rows
+                        DB      $20                     ; row 00: . . 1 . . . . .
+                        DB      $70                     ; row 01: . 1 1 1 . . . .
+                        DB      $70                     ; row 02: . 1 1 1 . . . .
+                        DB      $70                     ; row 03: . 1 1 1 . . . .
+                        DB      $70                     ; row 04: . 1 1 1 . . . .
+                        DB      $70                     ; row 05: . 1 1 1 . . . .
+                        DB      $70                     ; row 06: . 1 1 1 . . . .
+                        DB      $70                     ; row 07: . 1 1 1 . . . .
+                        DB      $70                     ; row 08: . 1 1 1 . . . .
+                        DB      $70                     ; row 09: . 1 1 1 . . . .
+                        DB      $70                     ; row 10: . 1 1 1 . . . .
+                        DB      $70                     ; row 11: . 1 1 1 . . . .
+                        DB      $70                     ; row 12: . 1 1 1 . . . .
+                        DB      $20                     ; row 13: . . 1 . . . . .
+                        DB      $20                     ; row 14: . . 1 . . . . .
+                        DB      $20                     ; row 15: . . 1 . . . . .
+                        DB      $70                     ; row 16: . 1 1 1 . . . .
+                        DB      $00                     ; row 17: . . . . . . . .
+                        DB      $00                     ; row 18: . . . . . . . .
+                        DB      $00                     ; row 19: . . . . . . . .
+                        DB      $00                     ; row 20: . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_PADDING_1144
+; 3 unreferenced zero bytes between descriptors.
+;*******************************************************************************
+BITMAP_PADDING_1144:
+                        DB      $00,$00,$00
+
+;*******************************************************************************
+; BITMAP_TORPEDO_MIDDLE
+; 1 source bytes/row = 8 expanded display pixels = 4 object X units, 21 rows
+; Source mask size: 21 bytes ($15)
+; Descriptor total size: 23 bytes ($17), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: TORPEDO_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_TORPEDO_MIDDLE:
+                        DB      $01,$15           ; source width bytes, height rows
+                        DB      $60                     ; row 00: . 1 1 . . . . .
+                        DB      $60                     ; row 01: . 1 1 . . . . .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $60                     ; row 04: . 1 1 . . . . .
+                        DB      $60                     ; row 05: . 1 1 . . . . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $00                     ; row 07: . . . . . . . .
+                        DB      $60                     ; row 08: . 1 1 . . . . .
+                        DB      $00                     ; row 09: . . . . . . . .
+                        DB      $00                     ; row 10: . . . . . . . .
+                        DB      $00                     ; row 11: . . . . . . . .
+                        DB      $00                     ; row 12: . . . . . . . .
+                        DB      $00                     ; row 13: . . . . . . . .
+                        DB      $00                     ; row 14: . . . . . . . .
+                        DB      $00                     ; row 15: . . . . . . . .
+                        DB      $00                     ; row 16: . . . . . . . .
+                        DB      $00                     ; row 17: . . . . . . . .
+                        DB      $00                     ; row 18: . . . . . . . .
+                        DB      $00                     ; row 19: . . . . . . . .
+                        DB      $00                     ; row 20: . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_PADDING_115E
+; 4 unreferenced zero bytes between descriptors.
+;*******************************************************************************
+BITMAP_PADDING_115E:
+                        DB      $00,$00,$00,$00
+
+;*******************************************************************************
+; BITMAP_TORPEDO_FAR
+; 1 source bytes/row = 8 expanded display pixels = 4 object X units, 11 rows
+; Source mask size: 11 bytes ($0B)
+; Descriptor total size: 13 bytes ($0D), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: TORPEDO_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_TORPEDO_FAR:
+                        DB      $01,$0B           ; source width bytes, height rows
+                        DB      $40                     ; row 00: . 1 . . . . . .
+                        DB      $40                     ; row 01: . 1 . . . . . .
+                        DB      $40                     ; row 02: . 1 . . . . . .
+                        DB      $40                     ; row 03: . 1 . . . . . .
+                        DB      $40                     ; row 04: . 1 . . . . . .
+                        DB      $00                     ; row 05: . . . . . . . .
+                        DB      $00                     ; row 06: . . . . . . . .
+                        DB      $00                     ; row 07: . . . . . . . .
+                        DB      $00                     ; row 08: . . . . . . . .
+                        DB      $00                     ; row 09: . . . . . . . .
+                        DB      $00                     ; row 10: . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_PADDING_116F
+; 12 unreferenced zero bytes between descriptors.
+;*******************************************************************************
+BITMAP_PADDING_116F:
+                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$00
+
+;*******************************************************************************
+; BITMAP_MINE
+; 1 source bytes/row = 8 expanded display pixels = 4 object X units, 16 rows
+; Source mask size: 16 bytes ($10)
+; Descriptor total size: 18 bytes ($12), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: MINE_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_MINE:
+                        DB      $01,$10           ; source width bytes, height rows
+                        DB      $08                     ; row 00: . . . . 1 . . .
+                        DB      $5D                     ; row 01: . 1 . 1 1 1 . 1
+                        DB      $3E                     ; row 02: . . 1 1 1 1 1 .
+                        DB      $7F                     ; row 03: . 1 1 1 1 1 1 1
+                        DB      $3E                     ; row 04: . . 1 1 1 1 1 .
+                        DB      $1C                     ; row 05: . . . 1 1 1 . .
+                        DB      $2A                     ; row 06: . . 1 . 1 . 1 .
+                        DB      $08                     ; row 07: . . . . 1 . . .
+                        DB      $00                     ; row 08: . . . . . . . .
+                        DB      $08                     ; row 09: . . . . 1 . . .
+                        DB      $00                     ; row 10: . . . . . . . .
+                        DB      $10                     ; row 11: . . . 1 . . . .
+                        DB      $00                     ; row 12: . . . . . . . .
+                        DB      $00                     ; row 13: . . . . . . . .
+                        DB      $20                     ; row 14: . . 1 . . . . .
+                        DB      $00                     ; row 15: . . . . . . . .
+
+;*******************************************************************************
+; BITMAP_MINE_HIT
+; 1 source bytes/row = 8 expanded display pixels = 4 object X units, 16 rows
+; Source mask size: 16 bytes ($10)
+; Descriptor total size: 18 bytes ($12), including 2-byte width/height header
+; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
+; Consumer: MINE_BITMAP_SEQUENCE
+;*******************************************************************************
+BITMAP_MINE_HIT:
+                        DB      $01,$10           ; source width bytes, height rows
+                        DB      $91                     ; row 00: 1 . . 1 . . . 1
+                        DB      $52                     ; row 01: . 1 . 1 . . 1 .
+                        DB      $44                     ; row 02: . 1 . . . 1 . .
+                        DB      $28                     ; row 03: . . 1 . 1 . . .
+                        DB      $18                     ; row 04: . . . 1 1 . . .
+                        DB      $25                     ; row 05: . . 1 . . 1 . 1
+                        DB      $A4                     ; row 06: 1 . 1 . . 1 . .
+                        DB      $18                     ; row 07: . . . 1 1 . . .
+                        DB      $28                     ; row 08: . . 1 . 1 . . .
+                        DB      $44                     ; row 09: . 1 . . . 1 . .
+                        DB      $42                     ; row 10: . 1 . . . . 1 .
+                        DB      $92                     ; row 11: 1 . . 1 . . 1 .
+                        DB      $09                     ; row 12: . . . . 1 . . 1
+                        DB      $10                     ; row 13: . . . 1 . . . .
+                        DB      $08                     ; row 14: . . . . 1 . . .
+                        DB      $10                     ; row 15: . . . 1 . . . .
 ;-------------------------------------------------------------------------------
-; $119F: Ten-byte character bitmaps indexed by character minus ASCII '0'
+; $119F-$134C: 43 ten-row font glyphs for character codes $30-$5A
 ;-------------------------------------------------------------------------------
+; DRAW_CHARACTER subtracts $30 and multiplies the index by ten.  Each source
+; byte is one 8-pixel 1bpp row, MSB first.  Function Generator expand mode
+; maps . to the selected background color and 1 to the selected text color.
+; Codes $3A-$3F are full masks.  Code $40 is the blank used by ROM strings.
 FONT_BITMAPS:
-                        DB      $3C,$7E,$66,$66,$66,$66,$66,$66,$7E,$3C,$18,$38,$18,$18,$18,$18 ; $119F  <~ffffff~<.8....
-                        DB      $18,$18,$3C,$3C,$3C,$7E,$66,$06,$3E,$7C,$60,$60,$7E,$7E,$3C,$7E ; $11AF  ..<<<~f.>|``~~<~
-                        DB      $66,$06,$1C,$1E,$06,$66,$7E,$3C,$66,$66,$66,$66,$7E,$7E,$06,$06 ; $11BF  f....f~<ffff~~..
-                        DB      $06,$06,$7C,$7C,$60,$60,$7C,$7E,$06,$66,$7E,$3C,$3C,$7C,$60,$60 ; $11CF  ..||``|~.f~<<|``
-                        DB      $7C,$7E,$66,$66,$7E,$3C,$7E,$7E,$06,$0E,$0C,$1C,$18,$38,$30,$30 ; $11DF  |~ff~<~~.....800
-                        DB      $3C,$7E,$66,$66,$3C,$7E,$66,$66,$7E,$3C,$3C,$7E,$66,$66,$7E,$3E ; $11EF  <~ff<~ff~<<~ff~>
-                        DB      $06,$06,$3E,$3C,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $11FF  ..><............
-                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $120F  ................
-                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $121F  ................
-                        DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF ; $122F  ................
-                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$00,$00,$18,$3C,$7E,$66,$66,$66 ; $123F  ...........<~fff
-                        DB      $7E,$7E,$66,$66,$7C,$7E,$66,$66,$7C,$7E,$66,$66,$7E,$7C,$3C,$7E ; $124F  ~~ff|~ff|~ff~|<~
-                        DB      $66,$60,$60,$60,$60,$66,$7E,$3C,$7C,$7E,$66,$66,$66,$66,$66,$66 ; $125F  f````f~<|~ffffff
-                        DB      $7E,$7C,$7E,$7E,$60,$60,$7C,$7C,$60,$60,$7E,$7E,$7E,$7E,$60,$60 ; $126F  ~|~~``||``~~~~``
-                        DB      $7C,$7C,$60,$60,$60,$60,$3C,$7E,$60,$60,$60,$6E,$6E,$66,$7E,$3C ; $127F  ||````<~```nnf~<
-                        DB      $66,$66,$66,$66,$7E,$7E,$66,$66,$66,$66,$3C,$3C,$18,$18,$18,$18 ; $128F  ffff~~ffff<<....
-                        DB      $18,$18,$3C,$3C,$06,$06,$06,$06,$06,$06,$66,$66,$7E,$3C,$66,$66 ; $129F  ..<<......ff~<ff
-                        DB      $6E,$7C,$78,$78,$6C,$6E,$66,$66,$60,$60,$60,$60,$60,$60,$60,$60 ; $12AF  n|xxlnff````````
-                        DB      $7E,$7E,$C3,$E7,$E7,$DB,$DB,$C3,$C3,$C3,$C3,$C3,$66,$66,$76,$7E ; $12BF  ~~..........ffv~
-                        DB      $7E,$6E,$66,$66,$66,$66,$3C,$7E,$66,$66,$66,$66,$66,$66,$7E,$3C ; $12CF  ~nffff<~ffffff~<
-                        DB      $7C,$7E,$66,$66,$7E,$7C,$60,$60,$60,$60,$3C,$7E,$66,$66,$66,$66 ; $12DF  |~ff~|````<~ffff
-                        DB      $66,$6E,$64,$3A,$7C,$7E,$66,$66,$7E,$7C,$6E,$66,$66,$66,$3C,$7E ; $12EF  fnd:|~ff~|nfff<~
-                        DB      $66,$60,$7C,$3E,$06,$66,$7E,$3C,$7E,$7E,$18,$18,$18,$18,$18,$18 ; $12FF  f`|>.f~<~~......
-                        DB      $18,$18,$66,$66,$66,$66,$66,$66,$66,$66,$7E,$3C,$66,$66,$66,$66 ; $130F  ..ffffffff~<ffff
-                        DB      $66,$7E,$3C,$3C,$18,$18,$C3,$C3,$C3,$DB,$DB,$DB,$FF,$E7,$C3,$C3 ; $131F  f~<<............
-                        DB      $66,$66,$7E,$3C,$18,$18,$3C,$7E,$66,$66,$66,$66,$7E,$3C,$18,$18 ; $132F  ff~<..<~ffff~<..
-                        DB      $18,$18,$18,$18,$7E,$7E,$06,$0E,$1C,$38,$70,$60,$7E,$7E         ; $133F  ....~~...8p`~~
+
+;*******************************************************************************
+; FONT_GLYPH_0: ASCII $30 '0', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_0:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 05: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_1: ASCII $31 '1', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_1:
+                        DB      $18                     ; row 00: . . . 1 1 . . .
+                        DB      $38                     ; row 01: . . 1 1 1 . . .
+                        DB      $18                     ; row 02: . . . 1 1 . . .
+                        DB      $18                     ; row 03: . . . 1 1 . . .
+                        DB      $18                     ; row 04: . . . 1 1 . . .
+                        DB      $18                     ; row 05: . . . 1 1 . . .
+                        DB      $18                     ; row 06: . . . 1 1 . . .
+                        DB      $18                     ; row 07: . . . 1 1 . . .
+                        DB      $3C                     ; row 08: . . 1 1 1 1 . .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_2: ASCII $32 '2', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_2:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $06                     ; row 03: . . . . . 1 1 .
+                        DB      $3E                     ; row 04: . . 1 1 1 1 1 .
+                        DB      $7C                     ; row 05: . 1 1 1 1 1 . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $60                     ; row 07: . 1 1 . . . . .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 09: . 1 1 1 1 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_3: ASCII $33 '3', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_3:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $06                     ; row 03: . . . . . 1 1 .
+                        DB      $1C                     ; row 04: . . . 1 1 1 . .
+                        DB      $1E                     ; row 05: . . . 1 1 1 1 .
+                        DB      $06                     ; row 06: . . . . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_4: ASCII $34 '4', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_4:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 04: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $06                     ; row 06: . . . . . 1 1 .
+                        DB      $06                     ; row 07: . . . . . 1 1 .
+                        DB      $06                     ; row 08: . . . . . 1 1 .
+                        DB      $06                     ; row 09: . . . . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_5: ASCII $35 '5', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_5:
+                        DB      $7C                     ; row 00: . 1 1 1 1 1 . .
+                        DB      $7C                     ; row 01: . 1 1 1 1 1 . .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $7C                     ; row 04: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $06                     ; row 06: . . . . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_6: ASCII $36 '6', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_6:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7C                     ; row 01: . 1 1 1 1 1 . .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $7C                     ; row 04: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_7: ASCII $37 '7', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_7:
+                        DB      $7E                     ; row 00: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $06                     ; row 02: . . . . . 1 1 .
+                        DB      $0E                     ; row 03: . . . . 1 1 1 .
+                        DB      $0C                     ; row 04: . . . . 1 1 . .
+                        DB      $1C                     ; row 05: . . . 1 1 1 . .
+                        DB      $18                     ; row 06: . . . 1 1 . . .
+                        DB      $38                     ; row 07: . . 1 1 1 . . .
+                        DB      $30                     ; row 08: . . 1 1 . . . .
+                        DB      $30                     ; row 09: . . 1 1 . . . .
+
+;*******************************************************************************
+; FONT_GLYPH_8: ASCII $38 '8', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_8:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $3C                     ; row 04: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_9: ASCII $39 '9', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_9:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 04: . 1 1 1 1 1 1 .
+                        DB      $3E                     ; row 05: . . 1 1 1 1 1 .
+                        DB      $06                     ; row 06: . . . . . 1 1 .
+                        DB      $06                     ; row 07: . . . . . 1 1 .
+                        DB      $3E                     ; row 08: . . 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_COLON: ASCII $3A ':', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_COLON:
+                        DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 03: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 04: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 05: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 07: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 08: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_SEMICOLON: ASCII $3B ';', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_SEMICOLON:
+                        DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 03: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 04: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 05: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 07: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 08: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_LESS_THAN: ASCII $3C '<', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_LESS_THAN:
+                        DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 03: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 04: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 05: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 07: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 08: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_EQUALS: ASCII $3D '=', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_EQUALS:
+                        DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 03: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 04: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 05: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 07: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 08: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_GREATER_THAN: ASCII $3E '>', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_GREATER_THAN:
+                        DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 03: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 04: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 05: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 07: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 08: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_QUESTION_MARK: ASCII $3F '?', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_QUESTION_MARK:
+                        DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 03: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 04: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 05: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 07: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 08: 1 1 1 1 1 1 1 1
+                        DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_BLANK: ASCII $40 blank, 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_BLANK:
+                        DB      $00                     ; row 00: . . . . . . . .
+                        DB      $00                     ; row 01: . . . . . . . .
+                        DB      $00                     ; row 02: . . . . . . . .
+                        DB      $00                     ; row 03: . . . . . . . .
+                        DB      $00                     ; row 04: . . . . . . . .
+                        DB      $00                     ; row 05: . . . . . . . .
+                        DB      $00                     ; row 06: . . . . . . . .
+                        DB      $00                     ; row 07: . . . . . . . .
+                        DB      $00                     ; row 08: . . . . . . . .
+                        DB      $00                     ; row 09: . . . . . . . .
+
+;*******************************************************************************
+; FONT_GLYPH_A: ASCII $41 'A', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_A:
+                        DB      $18                     ; row 00: . . . 1 1 . . .
+                        DB      $3C                     ; row 01: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 02: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 05: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 06: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 07: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 08: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 09: . 1 1 . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_B: ASCII $42 'B', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_B:
+                        DB      $7C                     ; row 00: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $7C                     ; row 04: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $7C                     ; row 09: . 1 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_C: ASCII $43 'C', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_C:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $60                     ; row 04: . 1 1 . . . . .
+                        DB      $60                     ; row 05: . 1 1 . . . . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_D: ASCII $44 'D', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_D:
+                        DB      $7C                     ; row 00: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 05: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $7C                     ; row 09: . 1 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_E: ASCII $45 'E', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_E:
+                        DB      $7E                     ; row 00: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $7C                     ; row 04: . 1 1 1 1 1 . .
+                        DB      $7C                     ; row 05: . 1 1 1 1 1 . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $60                     ; row 07: . 1 1 . . . . .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 09: . 1 1 1 1 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_F: ASCII $46 'F', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_F:
+                        DB      $7E                     ; row 00: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $7C                     ; row 04: . 1 1 1 1 1 . .
+                        DB      $7C                     ; row 05: . 1 1 1 1 1 . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $60                     ; row 07: . 1 1 . . . . .
+                        DB      $60                     ; row 08: . 1 1 . . . . .
+                        DB      $60                     ; row 09: . 1 1 . . . . .
+
+;*******************************************************************************
+; FONT_GLYPH_G: ASCII $47 'G', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_G:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $60                     ; row 04: . 1 1 . . . . .
+                        DB      $6E                     ; row 05: . 1 1 . 1 1 1 .
+                        DB      $6E                     ; row 06: . 1 1 . 1 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_H: ASCII $48 'H', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_H:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 04: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 08: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 09: . 1 1 . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_I: ASCII $49 'I', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_I:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $3C                     ; row 01: . . 1 1 1 1 . .
+                        DB      $18                     ; row 02: . . . 1 1 . . .
+                        DB      $18                     ; row 03: . . . 1 1 . . .
+                        DB      $18                     ; row 04: . . . 1 1 . . .
+                        DB      $18                     ; row 05: . . . 1 1 . . .
+                        DB      $18                     ; row 06: . . . 1 1 . . .
+                        DB      $18                     ; row 07: . . . 1 1 . . .
+                        DB      $3C                     ; row 08: . . 1 1 1 1 . .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_J: ASCII $4A 'J', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_J:
+                        DB      $06                     ; row 00: . . . . . 1 1 .
+                        DB      $06                     ; row 01: . . . . . 1 1 .
+                        DB      $06                     ; row 02: . . . . . 1 1 .
+                        DB      $06                     ; row 03: . . . . . 1 1 .
+                        DB      $06                     ; row 04: . . . . . 1 1 .
+                        DB      $06                     ; row 05: . . . . . 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_K: ASCII $4B 'K', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_K:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $6E                     ; row 02: . 1 1 . 1 1 1 .
+                        DB      $7C                     ; row 03: . 1 1 1 1 1 . .
+                        DB      $78                     ; row 04: . 1 1 1 1 . . .
+                        DB      $78                     ; row 05: . 1 1 1 1 . . .
+                        DB      $6C                     ; row 06: . 1 1 . 1 1 . .
+                        DB      $6E                     ; row 07: . 1 1 . 1 1 1 .
+                        DB      $66                     ; row 08: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 09: . 1 1 . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_L: ASCII $4C 'L', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_L:
+                        DB      $60                     ; row 00: . 1 1 . . . . .
+                        DB      $60                     ; row 01: . 1 1 . . . . .
+                        DB      $60                     ; row 02: . 1 1 . . . . .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $60                     ; row 04: . 1 1 . . . . .
+                        DB      $60                     ; row 05: . 1 1 . . . . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $60                     ; row 07: . 1 1 . . . . .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 09: . 1 1 1 1 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_M: ASCII $4D 'M', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_M:
+                        DB      $C3                     ; row 00: 1 1 . . . . 1 1
+                        DB      $E7                     ; row 01: 1 1 1 . . 1 1 1
+                        DB      $E7                     ; row 02: 1 1 1 . . 1 1 1
+                        DB      $DB                     ; row 03: 1 1 . 1 1 . 1 1
+                        DB      $DB                     ; row 04: 1 1 . 1 1 . 1 1
+                        DB      $C3                     ; row 05: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 06: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 07: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 08: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 09: 1 1 . . . . 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_N: ASCII $4E 'N', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_N:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $76                     ; row 02: . 1 1 1 . 1 1 .
+                        DB      $7E                     ; row 03: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 04: . 1 1 1 1 1 1 .
+                        DB      $6E                     ; row 05: . 1 1 . 1 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 08: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 09: . 1 1 . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_O: ASCII $4F 'O', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_O:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 05: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_P: ASCII $50 'P', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_P:
+                        DB      $7C                     ; row 00: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 04: . 1 1 1 1 1 1 .
+                        DB      $7C                     ; row 05: . 1 1 1 1 1 . .
+                        DB      $60                     ; row 06: . 1 1 . . . . .
+                        DB      $60                     ; row 07: . 1 1 . . . . .
+                        DB      $60                     ; row 08: . 1 1 . . . . .
+                        DB      $60                     ; row 09: . 1 1 . . . . .
+
+;*******************************************************************************
+; FONT_GLYPH_Q: ASCII $51 'Q', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_Q:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 05: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $6E                     ; row 07: . 1 1 . 1 1 1 .
+                        DB      $64                     ; row 08: . 1 1 . . 1 . .
+                        DB      $3A                     ; row 09: . . 1 1 1 . 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_R: ASCII $52 'R', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_R:
+                        DB      $7C                     ; row 00: . 1 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 04: . 1 1 1 1 1 1 .
+                        DB      $7C                     ; row 05: . 1 1 1 1 1 . .
+                        DB      $6E                     ; row 06: . 1 1 . 1 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 08: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 09: . 1 1 . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_S: ASCII $53 'S', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_S:
+                        DB      $3C                     ; row 00: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $60                     ; row 03: . 1 1 . . . . .
+                        DB      $7C                     ; row 04: . 1 1 1 1 1 . .
+                        DB      $3E                     ; row 05: . . 1 1 1 1 1 .
+                        DB      $06                     ; row 06: . . . . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_T: ASCII $54 'T', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_T:
+                        DB      $7E                     ; row 00: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $18                     ; row 02: . . . 1 1 . . .
+                        DB      $18                     ; row 03: . . . 1 1 . . .
+                        DB      $18                     ; row 04: . . . 1 1 . . .
+                        DB      $18                     ; row 05: . . . 1 1 . . .
+                        DB      $18                     ; row 06: . . . 1 1 . . .
+                        DB      $18                     ; row 07: . . . 1 1 . . .
+                        DB      $18                     ; row 08: . . . 1 1 . . .
+                        DB      $18                     ; row 09: . . . 1 1 . . .
+
+;*******************************************************************************
+; FONT_GLYPH_U: ASCII $55 'U', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_U:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 05: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 06: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 07: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 09: . . 1 1 1 1 . .
+
+;*******************************************************************************
+; FONT_GLYPH_V: ASCII $56 'V', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_V:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 02: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 03: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 04: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 05: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 06: . . 1 1 1 1 . .
+                        DB      $3C                     ; row 07: . . 1 1 1 1 . .
+                        DB      $18                     ; row 08: . . . 1 1 . . .
+                        DB      $18                     ; row 09: . . . 1 1 . . .
+
+;*******************************************************************************
+; FONT_GLYPH_W: ASCII $57 'W', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_W:
+                        DB      $C3                     ; row 00: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 01: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 02: 1 1 . . . . 1 1
+                        DB      $DB                     ; row 03: 1 1 . 1 1 . 1 1
+                        DB      $DB                     ; row 04: 1 1 . 1 1 . 1 1
+                        DB      $DB                     ; row 05: 1 1 . 1 1 . 1 1
+                        DB      $FF                     ; row 06: 1 1 1 1 1 1 1 1
+                        DB      $E7                     ; row 07: 1 1 1 . . 1 1 1
+                        DB      $C3                     ; row 08: 1 1 . . . . 1 1
+                        DB      $C3                     ; row 09: 1 1 . . . . 1 1
+
+;*******************************************************************************
+; FONT_GLYPH_X: ASCII $58 'X', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_X:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 02: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 03: . . 1 1 1 1 . .
+                        DB      $18                     ; row 04: . . . 1 1 . . .
+                        DB      $18                     ; row 05: . . . 1 1 . . .
+                        DB      $3C                     ; row 06: . . 1 1 1 1 . .
+                        DB      $7E                     ; row 07: . 1 1 1 1 1 1 .
+                        DB      $66                     ; row 08: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 09: . 1 1 . . 1 1 .
+
+;*******************************************************************************
+; FONT_GLYPH_Y: ASCII $59 'Y', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_Y:
+                        DB      $66                     ; row 00: . 1 1 . . 1 1 .
+                        DB      $66                     ; row 01: . 1 1 . . 1 1 .
+                        DB      $7E                     ; row 02: . 1 1 1 1 1 1 .
+                        DB      $3C                     ; row 03: . . 1 1 1 1 . .
+                        DB      $18                     ; row 04: . . . 1 1 . . .
+                        DB      $18                     ; row 05: . . . 1 1 . . .
+                        DB      $18                     ; row 06: . . . 1 1 . . .
+                        DB      $18                     ; row 07: . . . 1 1 . . .
+                        DB      $18                     ; row 08: . . . 1 1 . . .
+                        DB      $18                     ; row 09: . . . 1 1 . . .
+
+;*******************************************************************************
+; FONT_GLYPH_Z: ASCII $5A 'Z', 8x10 1bpp source mask, 10 bytes
+;*******************************************************************************
+FONT_GLYPH_Z:
+                        DB      $7E                     ; row 00: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 01: . 1 1 1 1 1 1 .
+                        DB      $06                     ; row 02: . . . . . 1 1 .
+                        DB      $0E                     ; row 03: . . . . 1 1 1 .
+                        DB      $1C                     ; row 04: . . . 1 1 1 . .
+                        DB      $38                     ; row 05: . . 1 1 1 . . .
+                        DB      $70                     ; row 06: . 1 1 1 . . . .
+                        DB      $60                     ; row 07: . 1 1 . . . . .
+                        DB      $7E                     ; row 08: . 1 1 1 1 1 1 .
+                        DB      $7E                     ; row 09: . 1 1 1 1 1 1 .
 
 ;-------------------------------------------------------------------------------
-; $134D: Fixed center panel drawn between the two player stations
+; $134D-$136A: Fixed player-status graphics
 ;-------------------------------------------------------------------------------
+; DRAW_PLAYER_STATUS passes each five-row, three-byte mask to DRAW_SMALL_BITMAP.
+; Each row expands from 24 one-bit source pixels to 24 two-bit display pixels.
+; Inline rows use . = color 0 and 1 = PLAYER_STATUS_COLOR.
+;
+;*******************************************************************************
+; PLAYER_STATUS_CENTER_BITMAP
+; 3 source bytes/row = 24 expanded display pixels = 12 logical X units, 5 rows
+; Source mask size: 15 bytes ($0F); no width/height header
+; Consumer: DRAW_PLAYER_STATUS at X=$4D, Y=$B8
+;*******************************************************************************
 PLAYER_STATUS_CENTER_BITMAP:
-                        DB      $EB,$EE,$00,$4A,$A8,$00,$4A,$AC,$00,$4A,$28,$00,$4A,$2E,$00     ; $134D
+                        DB      $EB,$EE,$00 ; row 00: 1 1 1 . 1 . 1 1 1 1 1 . 1 1 1 . . . . . . . . .
+                        DB      $4A,$A8,$00 ; row 01: . 1 . . 1 . 1 . 1 . 1 . 1 . . . . . . . . . . .
+                        DB      $4A,$AC,$00 ; row 02: . 1 . . 1 . 1 . 1 . 1 . 1 1 . . . . . . . . . .
+                        DB      $4A,$28,$00 ; row 03: . 1 . . 1 . 1 . . . 1 . 1 . . . . . . . . . . .
+                        DB      $4A,$2E,$00 ; row 04: . 1 . . 1 . 1 . . . 1 . 1 1 1 . . . . . . . . .
 
-;-------------------------------------------------------------------------------
-; $135C: Small status graphics used by player display rendering
-;-------------------------------------------------------------------------------
+;*******************************************************************************
+; PLAYER_STATUS_BITMAP
+; 3 source bytes/row = 24 expanded display pixels = 12 logical X units, 5 rows
+; Source mask size: 15 bytes ($0F); no width/height header
+; Consumer: DRAW_PLAYER_STATUS at X=$07/$82, Y=$B8
+;*******************************************************************************
 PLAYER_STATUS_BITMAP:
-                        DB      $EE,$EF,$70,$88,$A9,$40,$E8,$AF,$60,$28,$AA,$40,$EE,$E9,$70     ; $135C
+                        DB      $EE,$EF,$70 ; row 00: 1 1 1 . 1 1 1 . 1 1 1 . 1 1 1 1 . 1 1 1 . . . .
+                        DB      $88,$A9,$40 ; row 01: 1 . . . 1 . . . 1 . 1 . 1 . . 1 . 1 . . . . . .
+                        DB      $E8,$AF,$60 ; row 02: 1 1 1 . 1 . . . 1 . 1 . 1 1 1 1 . 1 1 . . . . .
+                        DB      $28,$AA,$40 ; row 03: . . 1 . 1 . . . 1 . 1 . 1 . 1 . . 1 . . . . . .
+                        DB      $EE,$E9,$70 ; row 04: 1 1 1 . 1 1 1 . 1 1 1 . 1 . . 1 . 1 1 1 . . . .
+
 TEXT_BLANK_HIT_SCORE:
                         DB      $40,$40,$40,$40,$00                                             ; $136B
 
@@ -4369,9 +5696,9 @@ TORPEDO_COLLISION_LANE_TABLE:
 ; $1AE4: Torpedo perspective-frame Y thresholds
 ;-------------------------------------------------------------------------------
 TORPEDO_FRAME_Y_TABLE:
-                        DB      TORPEDO_FRAME_NEAR_MIN_Y   ; frame 0: near, 4x21
-                        DB      TORPEDO_FRAME_MIDDLE_MIN_Y ; frame 1: middle, 4x21
-                        DB      TORPEDO_FRAME_FAR_MIN_Y    ; frame 2: far, 4x11
+                        DB      TORPEDO_FRAME_NEAR_MIN_Y   ; frame 0: 4x21 logical / 8x21 display
+                        DB      TORPEDO_FRAME_MIDDLE_MIN_Y ; frame 1: 4x21 logical / 8x21 display
+                        DB      TORPEDO_FRAME_FAR_MIN_Y    ; frame 2: 4x11 logical / 8x11 display
 
 TEXT_CONGRATULATIONS_EN:
                         DB      $43,$4F,$4E,$47,$52,$41,$54,$55,$4C,$41,$54,$49,$4F,$4E,$53,$00 ; $1AE7  CONGRATULATIONS
