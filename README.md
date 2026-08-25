@@ -25,6 +25,10 @@ not describe that structure correctly.
 - Machine initialization, credit/start selection, coinage paths, language
   selection, prompt rendering, text rendering, and player-status rendering are
   reconstructed as native Z80.
+- Cabinet handle/start/coin inputs, the complete S1 operator-switch matrix,
+  service-mode selection, and left/right station ownership are resolved.
+- A MAME 0.289 input-port error that prevents French prompt selection is
+  identified; the supplied driver patch corrects the French contact address.
 - The 25-byte object-record ABI, all three scheduler pools, object selection,
   fixed-point movement, rendering, and the target/torpedo/mine handlers are
   reconstructed as native Z80.
@@ -42,6 +46,8 @@ not describe that structure correctly.
 - Collision geometry, station ownership, packed-BCD scoring, four-hit bonuses,
   hit overlays, explosion timing, extended patrol, final-score/high-score
   selection, and localized high-score indication are fully traced.
+- Verified RAM, I/O-port, Magic-RAM scratch, bitmap, and localized prompt
+  references use source symbols rather than raw addresses.
 - Every reachable native Z80 routine is expressed as assembly. The remaining
   2,759 `DB` bytes are verified TERSE operands, tables, graphics/text, ROM fill,
   and one uncertain byte at `$1385`.
@@ -60,7 +66,98 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
 
-## Foreground initialization and input
+## Cabinet inputs, DIP switches, and station ownership
+
+### CPU port map
+
+The ROM uses physical station names. MAME's historical `P1HANDLE` and
+`P2HANDLE` tags are opposite the game's logical player numbers.
+
+| CPU port | MAME tag/device | Verified role |
+| ---: | --- | --- |
+| `$10` | `P1HANDLE` | Left station / logical player 2: Gray-code position bits 0-5, fire bit 7 |
+| `$11` | `P2HANDLE` | Right station / logical player 1: Gray-code position bits 0-5, French-select bit 6, fire bit 7 |
+| `$12` | `P3HANDLE` | Coin bit 0, one-player start bit 1, two-player start bit 2, German-select bit 3 |
+| `$13` | `P4HANDLE` | Operator switch bank S1 |
+| `$42` | `lamplatch1` | Left station torpedo, ready/reload, and hit lamps |
+| `$43` | `lamplatch0` | Right station torpedo, ready/reload, and hit lamps |
+
+`DECODE_HANDLE_POSITION` converts the six-bit reflected Gray code to a binary
+position. The normal fire path uses the decoded position to select a torpedo
+trajectory. The interactive service test displays both decoded positions as
+six binary digits; it does not display the fire bits.
+
+### Operator switch bank S1
+
+The manual and ROM agree on the complete post-500-game S1 assignment. Values
+below are the bytes read by the CPU at port `$13`.
+
+| Switches | Port mask | Function |
+| --- | ---: | --- |
+| S1-1/S1-2 | `$09` | One- and two-player pricing |
+| S1-3/S1-4 | `$06` | Initial play time and extended-play time |
+| S1-5/S1-6 | `$30` | Extended-play score threshold |
+| S1-7 | `$40` | Color when ON; monochrome when OFF |
+| S1-8 | `$80` | Normal play when ON; service test when OFF |
+
+Pricing is implemented by one combined four-way branch:
+
+| S1-1 | S1-2 | Port value | One-player cost | Two-player cost |
+| --- | --- | ---: | ---: | ---: |
+| ON | ON | `$09` | 1 | 2 |
+| OFF | ON | `$01` | 1 | 1 |
+| OFF | OFF | `$00` | 2 | 2 |
+| ON | OFF | `$08` | 2 | 4 |
+
+The `$08` path intentionally disables both start buttons at three credits and
+asks for one more credit for a two-player game. Accepted starts subtract the
+selected cost and return to the outer TERSE game loop.
+
+| S1-3 | S1-4 | Port value | One player | Two players | Extended 1P/2P |
+| --- | --- | ---: | ---: | ---: | ---: |
+| OFF | OFF | `$00` | 70 s | 90 s | 35 s / 45 s |
+| ON | OFF | `$02` | 60 s | 75 s | 30 s / 35 s |
+| OFF | ON | `$04` | 50 s | 60 s | 25 s / 30 s |
+| ON | ON | `$06` | 40 s | 45 s | 20 s / 20 s |
+
+| S1-5 | S1-6 | Port value | Extended play |
+| --- | --- | ---: | --- |
+| OFF | OFF | `$00` | Disabled |
+| ON | OFF | `$10` | 5000 points |
+| OFF | ON | `$20` | 6000 points |
+| ON | ON | `$30` | 7000 points |
+
+With S1-8 in service position, reset selects the diagnostic from the two start
+inputs: no button runs ROM checksum and memory tests, one-player start skips
+the ROM checksum, two-player start opens the two-handle input display, and both
+buttons open the convergence grid.
+
+### Language switch and MAME correction
+
+The post-500-game language switch supplies two active-high contacts. The ROM
+reads German from port `$12` bit 3 and French from port `$11` bit 6. No contact
+selects English. French has priority if both contacts are asserted. The result
+selects one of the English, German, or French prompt-pointer groups.
+
+MAME 0.289 defines the German contact correctly but places the French contact
+on port `$10` bit 6. The ROM never reads that bit, so MAME's French setting
+displays English prompts. The supplied MAME driver patch moves only that
+contact to port `$11` bit 6; no ROM change is required.
+
+### Station ownership
+
+| Physical station | Logical player | Active modes | Input | Lamps | Torpedo records | Color | Hit-side bit |
+| --- | ---: | --- | ---: | ---: | --- | ---: | ---: |
+| Left | 2 | Two-player only | `$10` | `$42` | `$C0FA`, then every `$32` (even low address) | `$08` red | 1 |
+| Right | 1 | One- and two-player | `$11` | `$43` | `$C113`, then every `$32` (odd low address) | `$04` yellow | 0 |
+
+The torpedo collision resolver derives ownership from record-address parity
+and stores it in target flag bit 3. Scoring, consecutive-hit bonuses, hit-score
+cleanup, ship/mine sound selection, and lamp restoration all consume that
+single ownership bit. One-player setup suppresses the left score panel and
+does not poll the left fire input.
+
+### Foreground initialization
 
 `CLEAR_RAM_AND_LOWER_VIDEO` clears all work RAM at `$C000-$C3FF` and video RAM
 at `$77F0-$7FAF`. `INITIALIZE_MACHINE` then:
@@ -75,26 +172,6 @@ The frame interrupt debounces coin input on port `$12` bit 0. A rising edge
 increments `COIN_INPUT_QUEUE`. `PULSE_COIN_COUNTER` consumes one queued event,
 drives a ten-frame mechanical-counter pulse, and increments `CREDIT_COUNT`.
 Start inputs are port `$12` bit 1 for one player and bit 2 for two players.
-
-The start routine masks DIP port `$13` with `$09` and implements four pricing
-paths:
-
-| DIP mask | One-player cost | Two-player cost | Enabled state |
-| ---: | ---: | ---: | --- |
-| `$09` | 1 | 2 | 1P at one credit; 2P at two or more |
-| `$01` | 1 | 1 | Both buttons at one or more credits |
-| `$00` | 2 | 2 | Both buttons at two or more credits |
-| `$08` | 2 | 4 | 1P at two credits; 2P at four or more |
-
-The `$08` path intentionally disables both buttons at three credits and asks
-for one more credit for a two-player game. Accepted starts subtract the stored
-cost and return to the outer TERSE game loop.
-
-`READ_LANGUAGE_SELECTION` reads port `$12` bit 3 and port `$11` bit 6. No bit
-selects English, bit 3 alone selects German, and bit 6 selects French with
-priority when both bits are set. The selected language offsets the nine prompt
-pointer lists before rendering them at X=`$28`, Y=`$3E`, with a Y step of
-`$0C` per line.
 
 ## Foreground renderer
 
@@ -129,6 +206,10 @@ No reachable native Z80 remains encoded as `DB`.
 
 The uncertain byte is `$8E` at `$1385`. It is not referenced as data and is
 not reachable from adjacent native code.
+
+The remaining `DB` regions are intentional data encodings. Named RAM cells,
+hardware ports, bitmap addresses, and prompt-string pointers are symbolic at
+their use sites.
 
 ## Object types
 
@@ -565,7 +646,8 @@ Each script performs the same four steps:
 1. Assemble `src/seawolf2.asm` into the 8 KB image and listing.
 2. Split the image into the four original 2 KB ROM filenames.
 3. Create `roms/seawolf2.zip` for MAME.
-4. Print the SHA1 value of each generated ROM.
+4. Verify every generated ROM against its official SHA1 value and fail on any
+   mismatch.
 
 Generated files:
 
