@@ -2986,6 +2986,10 @@ INITIAL_RIGHT_TORPEDO_TEMPLATE:
 ; Inline rows use: . = source 0 -> color 0; 1 = source 1 -> OBJECT_COLOR.
 ; The bitmap pointer lists reference 26 descriptors.  Two additional blocks
 ; at $1044 and $1090 have valid descriptor geometry but no ROM consumer.
+; $1044 is the complete 12-row form of the shrinking medium/small hit pattern;
+; the active 9-, 6-, 4- and 2-row frames are exact prefixes of its payload.
+; $1090 is a unique sparse impact/debris mask whose intended object class is
+; not recoverable because no code or pointer table selects it.
 OBJECT_BITMAP_DATA:
 
 ;*******************************************************************************
@@ -3192,11 +3196,13 @@ BITMAP_LARGE_HIT_FRAME_2:
                         DB      $07,$F8,$FF,$00         ; row 12: . . . . . 1 1 1 1 1 1 1 1 . . . 1 1 1 1 1 1 1 1 . . . . . . . .
 
 ;*******************************************************************************
-; BITMAP_LARGE_HIT_FRAME_2_UNUSED_ROWS
-; Two 4-byte row-shaped values follow frame 2, but its descriptor height is
-; 13 and the renderer stops at $0FD7.  No pointer targets these bytes.
+; UNUSED_LARGE_HIT_PATTERN_TAIL
+; Two four-byte rows follow BITMAP_LARGE_HIT_FRAME_2.  Appending them would
+; produce a 15-row form of the same pattern, but the descriptor declares 13
+; rows and the renderer stops at $0FD7.  The active 10-, 7-, 4- and 2-row large
+; hit frames are exact prefixes of frame 2; no pointer targets this tail.
 ;*******************************************************************************
-BITMAP_LARGE_HIT_FRAME_2_UNUSED_ROWS:
+UNUSED_LARGE_HIT_PATTERN_TAIL:
                         DB      $03,$FC,$CC,$00     ; unused row 00: . . . . . . 1 1 1 1 1 1 1 1 . . 1 1 . . 1 1 . . . . . . . . . .
                         DB      $00,$9F,$88,$00     ; unused row 01: . . . . . . . . 1 . . 1 1 1 1 1 1 . . . 1 . . . . . . . . . . .
 
@@ -3268,14 +3274,15 @@ BITMAP_LARGE_HIT_FRAME_6:
                         DB      $00,$00,$00,$8C         ; row 01: . . . . . . . . . . . . . . . . . . . . . . . . 1 . . . 1 1 . .
 
 ;*******************************************************************************
-; UNREFERENCED_BITMAP_1044
+; UNUSED_MEDIUM_HIT_PATTERN_12_ROWS
 ; 2 source bytes/row = 16 expanded display pixels = 8 object X units, 12 rows
 ; Source mask size: 24 bytes ($18)
 ; Descriptor total size: 26 bytes ($1A), including 2-byte width/height header
 ; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
-; Consumer: No pointer or native-code consumer in the canonical ROM
+; The active medium/small hit frames at $105E, $1072, $1080 and $108A are
+; exact 9-, 6-, 4- and 2-row prefixes.  No bitmap list selects this 12-row form.
 ;*******************************************************************************
-UNREFERENCED_BITMAP_1044:
+UNUSED_MEDIUM_HIT_PATTERN_12_ROWS:
                         DB      $02,$0C           ; source width bytes, height rows
                         DB      $08,$00                 ; row 00: . . . . 1 . . . . . . . . . . .
                         DB      $0C,$40                 ; row 01: . . . . 1 1 . . . 1 . . . . . .
@@ -3361,7 +3368,9 @@ BITMAP_SMALL_HIT_FRAME_3:
 ; Source mask size: 30 bytes ($1E)
 ; Descriptor total size: 32 bytes ($20), including 2-byte width/height header
 ; Pixels: . = color 0; 1 = OBJECT_COLOR through port $19
-; Consumer: No pointer or native-code consumer in the canonical ROM
+; The payload is unique in ROM and forms a sparse burst/debris silhouette with
+; a dense bottom row.  No pointer or native-code path identifies its event or
+; object class, so the address-based label deliberately remains neutral.
 ;*******************************************************************************
 UNREFERENCED_BITMAP_1090:
                         DB      $02,$0F           ; source width bytes, height rows
@@ -3608,7 +3617,8 @@ BITMAP_MINE_HIT:
 ; DRAW_CHARACTER subtracts $30 and multiplies the index by ten.  Each source
 ; byte is one 8-pixel 1bpp row, MSB first.  Function Generator expand mode
 ; maps . to the selected background color and 1 to the selected text color.
-; Codes $3A-$3F are full masks.  Code $40 is the blank used by ROM strings.
+; Codes $3A-$3F are solid full-mask slots, not punctuation artwork.  No ROM
+; string uses them.  Code $40 is the blank used by ROM strings.
 FONT_BITMAPS:
 
 ;*******************************************************************************
@@ -3762,9 +3772,9 @@ FONT_GLYPH_9:
                         DB      $3C                     ; row 09: . . 1 1 1 1 . .
 
 ;*******************************************************************************
-; FONT_GLYPH_COLON: ASCII $3A ':', 8x10 1bpp source mask, 10 bytes
+; FONT_GLYPH_FULL_MASK_3A: code $3A, solid 8x10 1bpp mask, 10 bytes
 ;*******************************************************************************
-FONT_GLYPH_COLON:
+FONT_GLYPH_FULL_MASK_3A:
                         DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
@@ -3777,9 +3787,9 @@ FONT_GLYPH_COLON:
                         DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
 
 ;*******************************************************************************
-; FONT_GLYPH_SEMICOLON: ASCII $3B ';', 8x10 1bpp source mask, 10 bytes
+; FONT_GLYPH_FULL_MASK_3B: code $3B, solid 8x10 1bpp mask, 10 bytes
 ;*******************************************************************************
-FONT_GLYPH_SEMICOLON:
+FONT_GLYPH_FULL_MASK_3B:
                         DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
@@ -3792,9 +3802,9 @@ FONT_GLYPH_SEMICOLON:
                         DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
 
 ;*******************************************************************************
-; FONT_GLYPH_LESS_THAN: ASCII $3C '<', 8x10 1bpp source mask, 10 bytes
+; FONT_GLYPH_FULL_MASK_3C: code $3C, solid 8x10 1bpp mask, 10 bytes
 ;*******************************************************************************
-FONT_GLYPH_LESS_THAN:
+FONT_GLYPH_FULL_MASK_3C:
                         DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
@@ -3807,9 +3817,9 @@ FONT_GLYPH_LESS_THAN:
                         DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
 
 ;*******************************************************************************
-; FONT_GLYPH_EQUALS: ASCII $3D '=', 8x10 1bpp source mask, 10 bytes
+; FONT_GLYPH_FULL_MASK_3D: code $3D, solid 8x10 1bpp mask, 10 bytes
 ;*******************************************************************************
-FONT_GLYPH_EQUALS:
+FONT_GLYPH_FULL_MASK_3D:
                         DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
@@ -3822,9 +3832,9 @@ FONT_GLYPH_EQUALS:
                         DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
 
 ;*******************************************************************************
-; FONT_GLYPH_GREATER_THAN: ASCII $3E '>', 8x10 1bpp source mask, 10 bytes
+; FONT_GLYPH_FULL_MASK_3E: code $3E, solid 8x10 1bpp mask, 10 bytes
 ;*******************************************************************************
-FONT_GLYPH_GREATER_THAN:
+FONT_GLYPH_FULL_MASK_3E:
                         DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1
@@ -3837,9 +3847,9 @@ FONT_GLYPH_GREATER_THAN:
                         DB      $FF                     ; row 09: 1 1 1 1 1 1 1 1
 
 ;*******************************************************************************
-; FONT_GLYPH_QUESTION_MARK: ASCII $3F '?', 8x10 1bpp source mask, 10 bytes
+; FONT_GLYPH_FULL_MASK_3F: code $3F, solid 8x10 1bpp mask, 10 bytes
 ;*******************************************************************************
-FONT_GLYPH_QUESTION_MARK:
+FONT_GLYPH_FULL_MASK_3F:
                         DB      $FF                     ; row 00: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 01: 1 1 1 1 1 1 1 1
                         DB      $FF                     ; row 02: 1 1 1 1 1 1 1 1

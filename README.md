@@ -323,19 +323,33 @@ The animation lists at `$1A53-$1AC2` reference these 26 descriptors:
 | `$117B` | `BITMAP_MINE` | 1x16 | 8x16 | 4x16 | Live mine |
 | `$118D` | `BITMAP_MINE_HIT` | 1x16 | 8x16 | 4x16 | Mine hit frame |
 
-Two additional blocks exactly satisfy the same descriptor formula but have no
+Two additional blocks exactly satisfy the descriptor formula but have no
 pointer or native-code consumer:
 
-| Address | Label | Source bytes x rows | Display pixels | Bytes |
-| ---: | --- | ---: | ---: | ---: |
-| `$1044` | `UNREFERENCED_BITMAP_1044` | 2x12 | 16x12 | 26 |
-| `$1090` | `UNREFERENCED_BITMAP_1090` | 2x15 | 16x15 | 32 |
+| Address | Label | Source bytes x rows | Display pixels | Identification |
+| ---: | --- | ---: | ---: | --- |
+| `$1044` | `UNUSED_MEDIUM_HIT_PATTERN_12_ROWS` | 2x12 | 16x12 | Complete unused form of the shrinking medium/small hit pattern |
+| `$1090` | `UNREFERENCED_BITMAP_1090` | 2x15 | 16x15 | Unique sparse impact/debris mask; object class unresolved |
 
-`$0FD8-$0FDF` contains two four-byte row-shaped values immediately after
-`BITMAP_LARGE_HIT_FRAME_2`, but that descriptor declares 13 rows and the
-renderer stops at `$0FD7`. No pointer targets the extra eight bytes. The
-remaining inter-descriptor gaps are 19 zero bytes at `$1144-$1146`,
-`$115E-$1161`, and `$116F-$117A`.
+The `$1044` payload establishes its role directly. The active frames at `$105E`,
+`$1072`, `$1080`, and `$108A` are exact 9-, 6-, 4-, and 2-row prefixes of this
+12-row pattern. The bitmap lists use those shorter forms and never select the
+complete descriptor.
+
+`$1090` is a complete descriptor with a unique payload. Its rows form a sparse
+burst/debris silhouette above a dense bottom edge. No bitmap list, native load,
+or threaded pointer identifies the event or object class, so the source retains
+the neutral address-based label.
+
+`UNUSED_LARGE_HIT_PATTERN_TAIL` at `$0FD8-$0FDF` contains two four-byte rows
+immediately after `BITMAP_LARGE_HIT_FRAME_2`. Appending them would extend the
+pattern from 13 to 15 rows, but the descriptor height stops the renderer at
+`$0FD7`. The active large hit frames at `$0FE0`, `$100A`, `$1028`, and `$103A`
+are exact 10-, 7-, 4-, and 2-row prefixes of frame 2. No pointer targets the
+eight-byte tail.
+
+The remaining inter-descriptor gaps are 19 zero bytes at `$1144-$1146`,
+`$115E-$1161`, and `$116F-$117A`. They are zero fill, not graphics.
 
 ### Font glyphs
 
@@ -346,7 +360,7 @@ ten one-byte 1bpp rows and has its own source label and inline 8-pixel rows.
 | Address range | Codes | Contents |
 | ---: | ---: | --- |
 | `$119F-$1202` | `$30-$39` | Digits 0-9 |
-| `$1203-$123E` | `$3A-$3F` | Six full-mask glyph slots |
+| `$1203-$123E` | `$3A-$3F` | Six solid full-mask slots; no ROM string uses these codes |
 | `$123F-$1248` | `$40` | Blank used as space by ROM strings |
 | `$1249-$134C` | `$41-$5A` | Letters A-Z |
 
@@ -393,8 +407,13 @@ No reachable native Z80 remains encoded as `DB`.
 | Uncertain mixed role | 1 | 1 |
 | **Total** | **25** | **2,759** |
 
-The uncertain byte is `$8E` at `$1385`. It is not referenced as data and is
-not reachable from adjacent native code.
+The graphics audit found no other complete unreferenced bitmap descriptors.
+The six full-mask font slots at `$1203-$123E` are mapper-addressable but unused
+by every ROM string. The inter-descriptor zero gaps are not assets.
+
+The uncertain byte is `$8E` at `$1385`. It is not referenced as data, is not
+reachable from adjacent native code, and is too small to classify as graphics.
+`$1FB4-$1FFE` is ROM-tail fill; `$1FFF` is the final block's checksum adjustment.
 
 The remaining `DB` regions are intentional data encodings. Named RAM cells,
 hardware ports, bitmap addresses, and prompt-string pointers are symbolic at
