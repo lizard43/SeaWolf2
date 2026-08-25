@@ -71,14 +71,42 @@ PORT_INTERRUPT_VECTOR   EQU     $0D
 PORT_INTERRUPT_ENABLE   EQU     $0E
 PORT_INTERRUPT_LINE     EQU     $0F
 PORT_MAGIC_EXPAND       EQU     $19
-PORT_P2_HANDLE          EQU     $10
-PORT_P1_HANDLE          EQU     $11
+PORT_LEFT_STATION_HANDLE  EQU   $10
+PORT_RIGHT_STATION_HANDLE EQU   $11
 PORT_COIN_START         EQU     $12
 PORT_DIP_SWITCHES       EQU     $13
 PORT_SOUND_EVENTS       EQU     $40
 PORT_SOUND_CONTROL      EQU     $41
 PORT_LEFT_LAMPS         EQU     $42
 PORT_RIGHT_LAMPS        EQU     $43
+
+; Cabinet/station ABI.  Logical player 1 occupies the right station and is the
+; only station active in a one-player game.  Logical player 2 occupies the left
+; station and is enabled only in a two-player game.
+;
+;              handle   lamps   torpedo records   color   hit-side flag
+; left / P2     $10      $42     even: $C0FA...    $08     bit 3 = 1
+; right / P1    $11      $43     odd:  $C113...    $04     bit 3 = 0
+;
+; Both handle ports contain a six-bit Gray-coded position and an active-high
+; fire input.  Torpedo-record address parity becomes target flag bit 3 on a
+; hit; scoring, hit lamps, bonus state, and collision sound consume that bit.
+RAW_HANDLE_POSITION_MASK        EQU $3F
+DECODED_HANDLE_POSITION_MASK    EQU $7F
+HANDLE_FIRE_MASK                EQU $80
+STATION_PORT_PARITY_BIT         EQU $00 ; port $10 left, port $11 right
+
+COIN_INPUT_MASK                 EQU $01 ; port $12 bit 0
+INPUT_ONE_PLAYER_START_BIT      EQU $01 ; port $12 bit 1
+INPUT_TWO_PLAYER_START_BIT      EQU $02 ; port $12 bit 2
+INPUT_ONE_PLAYER_START_MASK     EQU $02
+INPUT_TWO_PLAYER_START_MASK     EQU $04
+INPUT_START_BUTTON_MASK         EQU $06
+LANGUAGE_GERMAN_SWITCH_MASK     EQU $08 ; port $12 bit 3
+LANGUAGE_FRENCH_SWITCH_MASK     EQU $40 ; port $11 bit 6
+
+PLAYER_COUNT_ONE                EQU $01
+PLAYER_COUNT_TWO                EQU $02
 
 RAM_BASE                EQU     $C000
 TERSE_DATA_STACK        EQU     $C3E2
@@ -108,17 +136,44 @@ TARGET_TYPE_SEQUENCE_CURSOR EQU $C20B
 
 START_FLAG_ONE_PLAYER   EQU     $02
 START_FLAG_TWO_PLAYER   EQU     $04
-INPUT_ONE_PLAYER_START_MASK EQU $02
-INPUT_TWO_PLAYER_START_MASK EQU $04
-COINAGE_DIP_MASK        EQU     $09
-LANGUAGE_COIN_PORT_MASK EQU     $08
-LANGUAGE_P1_PORT_MASK   EQU     $40
+START_FLAG_ONE_PLAYER_BIT EQU   $01
+START_FLAG_TWO_PLAYER_BIT EQU   $02
+
+; Operator switch bank S1 at port $13.  The manual numbers the two pricing
+; contacts S1-1 and S1-2 even though their bits appear in reverse order here.
+DIP_COINAGE_MASK                EQU $01 ; S1-2
+DIP_PLAY_TIME_MASK              EQU $06 ; S1-3/S1-4
+DIP_TWO_PLAYER_PRICE_MASK       EQU $08 ; S1-1
+DIP_PRICING_MASK                EQU $09 ; S1-1/S1-2 together
+DIP_EXTENDED_PLAY_MASK          EQU $30 ; S1-5/S1-6
+DIP_MONITOR_TYPE_MASK           EQU $40 ; S1-7: 0 B/W, 1 color
+DIP_SERVICE_MODE_MASK           EQU $80 ; S1-8: 0 test, 1 play
+
+PRICING_1P_2C_2P_2C            EQU $00 ; S1-1 OFF, S1-2 OFF
+PRICING_1P_1C_2P_1C            EQU $01 ; S1-1 OFF, S1-2 ON
+PRICING_1P_2C_2P_4C            EQU $08 ; S1-1 ON,  S1-2 OFF
+PRICING_1P_1C_2P_2C            EQU $09 ; S1-1 ON,  S1-2 ON
+
+DIP_PLAY_TIME_1P70_2P90        EQU $00
+DIP_PLAY_TIME_1P60_2P75        EQU $02
+DIP_PLAY_TIME_1P50_2P60        EQU $04
+DIP_PLAY_TIME_1P40_2P45        EQU $06
+
+DIP_EXTENDED_PLAY_NONE         EQU $00
+DIP_EXTENDED_PLAY_5000         EQU $10
+DIP_EXTENDED_PLAY_6000         EQU $20
+DIP_EXTENDED_PLAY_7000         EQU $30
+
+DIP_MONITOR_BLACK_AND_WHITE    EQU $00
+DIP_MONITOR_COLOR              EQU $40
+DIP_SERVICE_MODE_TEST          EQU $00
+DIP_SERVICE_MODE_PLAY          EQU $80
+
 LANGUAGE_ENGLISH        EQU     $00
 LANGUAGE_GERMAN         EQU     $01
 LANGUAGE_FRENCH         EQU     $02
 
 INITIAL_INTERRUPT_ENABLE EQU   $08
-RASTER_SCHEDULE_DIP_MASK EQU   $40
 INITIAL_COLOR_SPLIT_VALUE EQU  $2A
 
 PROMPT_TEXT_COLOR       EQU     $0C
@@ -250,7 +305,8 @@ BITMAP_ROW_COUNT            EQU $01
 ; Collision state is deliberately split: bit 6 drives the hit animation while
 ; bit 5 queues scoring/event processing for the foreground TERSE thread.
 OBJECT_FLAG_SCORE_OVERLAY   EQU $04            ; bit 2: hit value is visible
-OBJECT_FLAG_HIT_SIDE        EQU $08            ; bit 3: 0 right, 1 left
+OBJECT_FLAG_HIT_SIDE_BIT    EQU $03            ; 0 right, 1 left
+OBJECT_FLAG_HIT_SIDE_MASK   EQU $08
 OBJECT_FLAG_AT_BOUNDARY     EQU $10            ; bit 4
 OBJECT_FLAG_HIT_PENDING     EQU $20            ; bit 5
 OBJECT_FLAG_HIT_ANIMATION   EQU $40            ; bit 6
@@ -296,9 +352,7 @@ NEW_HIGH_SCORE_BLINK_PERIOD     EQU $1E
 LAMP_HIT_INDICATOR_MASK         EQU $20
 
 GAME_CLOCK_DIVIDER_RELOAD       EQU $3C
-EXTENDED_SCORE_DIP_MASK         EQU $30
 EXTENDED_SCORE_BASE_BCD         EQU $40
-GAME_TIME_DIP_MASK              EQU $06
 
 ; Raw X-speed bytes are multiplied by four by ACTIVATE_TARGET_IN_LANE to form
 ; signed 8.8 velocities.  These become $0080, $0100 and $0200 per update.
@@ -330,6 +384,8 @@ BITMAP_SMALL_HIT_FRAME_1    EQU $10B0
 BITMAP_MEDIUM_HIT_FRAME_1   EQU $10C1
 BITMAP_LARGE_HIT_FRAME_1    EQU $10EF
 BITMAP_TORPEDO_NEAR         EQU $112D
+BITMAP_TORPEDO_NEAR_LO      EQU $2D
+BITMAP_TORPEDO_NEAR_HI      EQU $11
 BITMAP_TORPEDO_MIDDLE       EQU $1147
 BITMAP_TORPEDO_FAR          EQU $1162
 BITMAP_MINE                 EQU $117B
@@ -422,7 +478,7 @@ _DSPATCH                EQU     $E9FD           ; JP (IY), stored little-endian
 COLD_START:             NOP
                         NOP
                         DI
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         JP      WARM_START
 
 ; ENTER is reached through RST $08.  It moves the caller's threaded instruction
@@ -448,7 +504,7 @@ WARM_START:             LD      A,$01
                         LD      IY,TERSE_DISPATCH
                         LD      SP,TERSE_DATA_STACK
                         IN      A,(PORT_DIP_SWITCHES)
-                        AND     $80
+                        AND     DIP_SERVICE_MODE_MASK
                         JP      Z,POWER_ON_SELF_TEST
                         DW      _DSPATCH
 
@@ -589,7 +645,7 @@ POWER_ON_SELF_TEST:
                         LD      A,$07
                         OUT     (PORT_COLOR_7),A
                         IN      A,(PORT_COIN_START)
-                        AND     $06
+                        AND     INPUT_START_BUTTON_MASK
                         JP      NZ,SELF_TEST_BUTTON_SELECT
 
 ; Clear all $4000 bytes of screen RAM before reporting any ROM failure.
@@ -597,7 +653,7 @@ POWER_ON_SELF_TEST:
                         LD      DE,$4000
 self_test_clear_video:  LD      (HL),$00
                         INC     HL
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         DEC     E
                         JR      NZ,self_test_clear_video
                         DEC     D
@@ -616,7 +672,7 @@ self_test_clear_video:  LD      (HL),$00
 self_test_checksum_rom: XOR     A
 self_test_sum_rom_byte: ADD     A,(HL)
                         LD      D,A
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      A,D
                         INC     HL
                         DEC     C
@@ -626,7 +682,7 @@ self_test_sum_rom_byte: ADD     A,(HL)
                         CP      $FF
                         JR      NZ,self_test_report_rom_failure
 self_test_next_rom:     LD      BC,SELF_TEST_ROM_BLOCK_SIZE
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      A,H
                         CP      $20
                         JR      NZ,self_test_checksum_rom
@@ -636,7 +692,7 @@ self_test_next_rom:     LD      BC,SELF_TEST_ROM_BLOCK_SIZE
                         LD      A,(TEXT_X_POSITION_HI)
                         CP      $32
                         JR      Z,SELF_TEST_MEMORY_DIAGNOSTICS
-self_test_ram_failure:  IN      A,(PORT_P2_HANDLE)
+self_test_ram_failure:  IN      A,(PORT_LEFT_STATION_HANDLE)
                         JR      self_test_ram_failure
 
 ; Render the failed ROM block identifier, then continue so every program ROM
@@ -658,14 +714,14 @@ self_test_report_rom_failure:
                         DEC     HL
                         CALL    DRAW_TEXT
                         DI
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         POP     BC
                         POP     DE
                         POP     HL
                         JR      self_test_next_rom
 
 SELF_TEST_BUTTON_SELECT:
-                        CP      $02
+                        CP      INPUT_ONE_PLAYER_START_MASK
                         JP      NZ,SELF_TEST_MODE_SELECT
 
 ;-------------------------------------------------------------------------------
@@ -738,11 +794,11 @@ self_test_advance_write:
                         INC     HL
                         LD      A,H
                         CP      (IY+SELF_TEST_RANGE_UPPER_PAGE)
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         JR      NZ,self_test_write_bit
 
 self_test_reverse_scan: DEC     HL
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      A,H
                         CP      (IY+SELF_TEST_RANGE_LOWER_PAGE)
                         JR      Z,self_test_forward_complement_scan
@@ -762,7 +818,7 @@ self_test_write_complement:
 
 self_test_forward_complement_scan:
                         INC     HL
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      A,H
                         CP      (IY+SELF_TEST_RANGE_UPPER_PAGE)
                         JR      Z,self_test_next_bit
@@ -788,7 +844,7 @@ self_test_next_bit:     SLA     B
 ; palette registers, identifying every data line that failed.
 SELF_TEST_DISPLAY_MEMORY_FAILURE:
                         EXX
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      DE,VIDEO_RAM_BASE
                         LD      HL,SELF_TEST_PATTERN_TABLE+$10
                         LD      BC,$0028
@@ -801,7 +857,7 @@ SELF_TEST_DISPLAY_MEMORY_FAILURE:
 self_test_expand_failure_pattern:
                         LD      A,(HL)
                         LD      (DE),A
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         INC     HL
                         INC     DE
                         DEC     C
@@ -835,7 +891,7 @@ self_test_error_bit_7:  BIT     7,C
                         JR      Z,self_test_memory_failure_halt
                         OUT     (PORT_COLOR_4),A
 self_test_memory_failure_halt:
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         JR      self_test_memory_failure_halt
 
 ; A holds the nonzero XOR result from one failed byte.  ORing it into C keeps
@@ -849,7 +905,7 @@ SELF_TEST_ACCUMULATE_FAILURE:
 ; $0264: Select reset-button diagnostic path
 ;-------------------------------------------------------------------------------
 SELF_TEST_MODE_SELECT:
-                        CP      $04
+                        CP      INPUT_TWO_PLAYER_START_MASK
                         JP      NZ,CONVERGENCE_TEST
                         LD      SP,TERSE_DATA_STACK
                         LD      IX,TERSE_RETURN_STACK
@@ -866,16 +922,16 @@ SELF_TEST_INTERACTIVE:
                         LD      (TEXT_COLOR),A
                         LD      A,$78
                         LD      (TEXT_Y_POSITION),A
-self_test_input_loop:   IN      A,(PORT_P2_HANDLE)
+self_test_input_loop:   IN      A,(PORT_LEFT_STATION_HANDLE)
                         XOR     A
                         LD      (TEXT_X_POSITION_HI),A
-                        IN      A,(PORT_P2_HANDLE)
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         CALL    SELF_TEST_DRAW_HANDLE_VALUE
                         LD      A,$78
                         LD      (TEXT_X_POSITION_HI),A
-                        IN      A,(PORT_P2_HANDLE)
-                        IN      A,(PORT_P1_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
+                        IN      A,(PORT_RIGHT_STATION_HANDLE)
                         CALL    SELF_TEST_DRAW_HANDLE_VALUE
                         JR      self_test_input_loop
 
@@ -884,7 +940,7 @@ self_test_input_loop:   IN      A,(PORT_P2_HANDLE)
 SELF_TEST_DRAW_HANDLE_VALUE:
                         CALL    DECODE_HANDLE_POSITION
                         LD      HL,SELF_TEST_TEXT_BUFFER
-                        AND     $7F
+                        AND     DECODED_HANDLE_POSITION_MASK
                         RLCA
                         LD      B,$06
 self_test_emit_handle_bit:
@@ -898,7 +954,7 @@ self_test_emit_handle_bit:
                         DJNZ    self_test_emit_handle_bit
                         LD      (HL),$00
                         LD      HL,SELF_TEST_TEXT_BUFFER
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         CALL    DRAW_TEXT
                         DI
                         RET
@@ -914,7 +970,7 @@ CONVERGENCE_TEST:
                         LD      B,$28
 convergence_vertical_pattern:
                         LD      (HL),$00
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         INC     HL
                         LD      (HL),$03
                         INC     HL
@@ -922,7 +978,7 @@ convergence_vertical_pattern:
 
                         LD      BC,$0330
 convergence_clear_seed: LD      (HL),$00
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         INC     HL
                         DEC     C
                         JR      NZ,convergence_clear_seed
@@ -934,13 +990,13 @@ convergence_clear_seed: LD      (HL),$00
 convergence_repeat_seed:
                         LD      A,(HL)
                         LD      (DE),A
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         INC     DE
                         INC     HL
                         DEC     C
                         JR      NZ,convergence_repeat_seed
                         DJNZ    convergence_repeat_seed
-convergence_halt:       IN      A,(PORT_P2_HANDLE)
+convergence_halt:       IN      A,(PORT_LEFT_STATION_HANDLE)
                         JR      convergence_halt
 
 ;-------------------------------------------------------------------------------
@@ -997,12 +1053,14 @@ INITIALIZE_MACHINE:
                         LD      DE,RASTER_MOTION_STATE_0
                         LDIR
 
-; DIP bit 6 selects one of the two six-boundary raster palettes.
+; S1-7 selects the six-boundary palette schedule for the installed monitor.
+; Color selects the high-chroma schedule; black-and-white selects luminance
+; values suitable for the monochrome display option documented by Midway.
                         IN      A,(PORT_DIP_SWITCHES)
-                        AND     RASTER_SCHEDULE_DIP_MASK
-                        LD      HL,INTERRUPT_SCHEDULE_SET_B
+                        AND     DIP_MONITOR_TYPE_MASK
+                        LD      HL,MONOCHROME_MONITOR_INTERRUPT_SCHEDULE
                         JR      Z,interrupt_schedule_selected
-                        LD      HL,INTERRUPT_SCHEDULE_SET_A
+                        LD      HL,COLOR_MONITOR_INTERRUPT_SCHEDULE
 interrupt_schedule_selected:
                         LD      (INTERRUPT_SCHEDULE_CURSOR),HL
                         LD      (INTERRUPT_SCHEDULE_BASE),HL
@@ -1088,11 +1146,11 @@ clear_timed_state:      LD      (HL),A
 ; time DIP bits.  Each DIP step removes 10 seconds for one player or 15 seconds
 ; for two players.
                         IN      A,(PORT_DIP_SWITCHES)
-                        AND     $06
+                        AND     DIP_PLAY_TIME_MASK
                         RRCA
                         LD      B,A
                         LD      A,(ACTIVE_PLAYER_COUNT)
-                        CP      $02
+                        CP      PLAYER_COUNT_TWO
                         LD      C,$15
                         LD      D,$91
                         JR      Z,game_time_parameters_ready
@@ -1114,7 +1172,7 @@ game_time_ready:        LD      (GAME_TIME_BCD),A
                         LD      DE,$38F0
                         LD      HL,VIDEO_RAM_BASE
 clear_active_playfield: LD      (HL),$00
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         INC     HL
                         DEC     E
                         JR      NZ,clear_active_playfield
@@ -1122,7 +1180,7 @@ clear_active_playfield: LD      (HL),$00
                         JR      NZ,clear_active_playfield
 
                         LD      A,(ACTIVE_PLAYER_COUNT)
-                        CP      $02
+                        CP      PLAYER_COUNT_TWO
                         JR      Z,draw_initial_player_status
                         LD      A,$FF
                         LD      (LEFT_SCORE_REDRAW_LATCH),A ; suppress absent P2 score
@@ -1150,12 +1208,12 @@ start_prompt_after_coin_service:
 
 ; Accept an enabled one-player start input.
                         LD      A,(START_ELIGIBILITY_FLAGS)
-                        BIT     1,A
+                        BIT     START_FLAG_ONE_PLAYER_BIT,A
                         JR      Z,check_two_player_start
                         IN      A,(PORT_COIN_START)
-                        BIT     1,A
+                        BIT     INPUT_ONE_PLAYER_START_BIT,A
                         JR      Z,check_two_player_start
-                        LD      A,$01
+                        LD      A,PLAYER_COUNT_ONE
                         LD      (ACTIVE_PLAYER_COUNT),A
 commit_start_credits:   LD      A,(CREDIT_COUNT)
                         LD      HL,START_CREDIT_COST
@@ -1165,12 +1223,12 @@ commit_start_credits:   LD      A,(CREDIT_COUNT)
 
 ; Accept an enabled two-player start input.
 check_two_player_start: LD      A,(START_ELIGIBILITY_FLAGS)
-                        BIT     2,A
+                        BIT     START_FLAG_TWO_PLAYER_BIT,A
                         JR      Z,derive_start_options
                         IN      A,(PORT_COIN_START)
-                        BIT     2,A
+                        BIT     INPUT_TWO_PLAYER_START_BIT,A
                         JR      Z,derive_start_options
-                        LD      A,$02
+                        LD      A,PLAYER_COUNT_TWO
                         LD      (ACTIVE_PLAYER_COUNT),A
                         JR      commit_start_credits
 
@@ -1178,12 +1236,12 @@ check_two_player_start: LD      A,(START_ELIGIBILITY_FLAGS)
 ; nonzero.  Tests below for values other than one therefore mean two or more.
 derive_start_options:   LD      HL,START_ELIGIBILITY_FLAGS
                         IN      A,(PORT_DIP_SWITCHES)
-                        AND     COINAGE_DIP_MASK
+                        AND     DIP_PRICING_MASK
                         OR      A
                         JP      Z,pricing_two_credits_either_player
-                        CP      $08
+                        CP      PRICING_1P_2C_2P_4C
                         JP      Z,pricing_two_or_four_credits
-                        CP      $01
+                        CP      PRICING_1P_1C_2P_1C
                         JP      Z,pricing_one_credit_either_player
 
 ; DIP mask $09: one credit enables 1P; two or more enable 2P.
@@ -1191,22 +1249,22 @@ pricing_one_or_two_credits:
                         LD      A,(CREDIT_COUNT)
                         CP      $01
                         JR      NZ,enable_two_player_for_two_credits
-                        SET     1,(HL)
-                        RES     2,(HL)
+                        SET     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        RES     START_FLAG_TWO_PLAYER_BIT,(HL)
                         INC     HL
                         LD      (HL),$01
                         JP      select_prompt_one_player
 enable_two_player_for_two_credits:
-                        RES     1,(HL)
-                        SET     2,(HL)
+                        RES     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        SET     START_FLAG_TWO_PLAYER_BIT,(HL)
                         INC     HL
                         LD      (HL),$02
                         JP      select_prompt_two_player
 
 ; DIP mask $01: one credit starts either station mode.
 pricing_one_credit_either_player:
-                        SET     1,(HL)
-                        SET     2,(HL)
+                        SET     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        SET     START_FLAG_TWO_PLAYER_BIT,(HL)
                         INC     HL
                         LD      (HL),$01
                         JP      select_prompt_either_player
@@ -1218,8 +1276,8 @@ pricing_two_credits_either_player:
                         JR      NZ,enable_either_player_for_two_credits
                         JP      select_prompt_insert_one_more
 enable_either_player_for_two_credits:
-                        SET     1,(HL)
-                        SET     2,(HL)
+                        SET     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        SET     START_FLAG_TWO_PLAYER_BIT,(HL)
                         INC     HL
                         LD      (HL),$02
                         JP      select_prompt_two_credit_either
@@ -1233,20 +1291,20 @@ pricing_two_or_four_credits:
 check_two_or_four_credit_count:
                         CP      $02
                         JR      NZ,check_three_credit_count
-                        SET     1,(HL)
-                        RES     2,(HL)
+                        SET     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        RES     START_FLAG_TWO_PLAYER_BIT,(HL)
                         INC     HL
                         LD      (HL),A
                         JP      select_prompt_one_player_or_two_coins
 check_three_credit_count:
                         CP      $03
                         JR      NZ,enable_two_player_for_four_credits
-                        RES     1,(HL)
-                        RES     2,(HL)
+                        RES     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        RES     START_FLAG_TWO_PLAYER_BIT,(HL)
                         JP      select_prompt_one_more_for_two_player
 enable_two_player_for_four_credits:
-                        RES     1,(HL)
-                        SET     2,(HL)
+                        RES     START_FLAG_ONE_PLAYER_BIT,(HL)
+                        SET     START_FLAG_TWO_PLAYER_BIT,(HL)
                         INC     HL
                         LD      (HL),$04
                         JP      select_prompt_four_credit_two_player
@@ -1326,20 +1384,21 @@ DRAW_PROMPT_POINTER_LIST:
 ;-------------------------------------------------------------------------------
 ; $0527: Decode the two language-select input bits
 ;-------------------------------------------------------------------------------
-; Port $12 bit 3 alone selects German.  Port $11 bit 6 selects French and has
-; priority when both bits are present.  No selected bit means English.
+; The post-500-game four-position language switch supplies two active-high
+; contacts.  Port $12 bit 3 selects German and port $11 bit 6 selects French;
+; French has priority if both contacts are asserted.  No contact is English.
 READ_LANGUAGE_SELECTION:
                         PUSH    BC
                         IN      A,(PORT_COIN_START)
-                        AND     LANGUAGE_COIN_PORT_MASK
+                        AND     LANGUAGE_GERMAN_SWITCH_MASK
                         LD      B,A
-                        IN      A,(PORT_P1_HANDLE)
-                        AND     LANGUAGE_P1_PORT_MASK
+                        IN      A,(PORT_RIGHT_STATION_HANDLE)
+                        AND     LANGUAGE_FRENCH_SWITCH_MASK
                         OR      B
                         LD      B,LANGUAGE_ENGLISH
                         JR      Z,language_selected
                         LD      B,LANGUAGE_GERMAN
-                        CP      LANGUAGE_COIN_PORT_MASK
+                        CP      LANGUAGE_GERMAN_SWITCH_MASK
                         JR      Z,language_selected
                         LD      B,LANGUAGE_FRENCH
 language_selected:      LD      A,B
@@ -1353,13 +1412,13 @@ language_selected:      LD      A,B
 CONTROL_THREAD_WORD:
                         RST     $08
 control_wait:           DW      TERSE_BEGIN
-                        DW      TERSE_INLINE_BFETCH,$C1DF
+                        DW      TERSE_INLINE_BFETCH,PATROL_COMPLETE_FLAG
                         DW      TERSE_ZERO_BRANCH,control_no_state
                         DW      CHECK_PATROL_END_OR_EXTENDED_PLAY
-control_no_state:       DW      TERSE_INLINE_BFETCH,$C1FB
+control_no_state:       DW      TERSE_INLINE_BFETCH,ACTIVE_PLAYER_COUNT
                         DW      TERSE_ZERO_BRANCH,control_no_player
                         DW      ERASE_EXPIRED_HIT_SCORES,PROCESS_SHIP_HIT,REFRESH_DIRTY_PLAYER_SCORES,UPDATE_SONAR_SEQUENCE
-                        DW      TERSE_INLINE_BFETCH,$C1DF
+                        DW      TERSE_INLINE_BFETCH,PATROL_COMPLETE_FLAG
                         DW      TERSE_BYTE_NOT
                         DW      TERSE_ZERO_BRANCH,control_continue
                         DW      UPDATE_GAME_TIME_DISPLAY,ACTIVATE_TARGET_LANES,POLL_TORPEDO_FIRE
@@ -1368,10 +1427,10 @@ control_no_player:      DW      INITIALIZE_OBJECT_POOLS,UPDATE_NEW_HIGH_SCORE_ME
                         DW      TERSE_INLINE_BFETCH,CREDIT_COUNT
                         DW      TERSE_ZERO_BRANCH,control_continue
                         DW      TERSE_TRUE
-                        DW      TERSE_LIT,$C1DF
+                        DW      TERSE_LIT,PATROL_COMPLETE_FLAG
                         DW      TERSE_BSTORE
 control_continue:       DW      PULSE_COIN_COUNTER
-                        DW      TERSE_INLINE_BFETCH,$C1DE
+                        DW      TERSE_INLINE_BFETCH,CONTROL_LOOP_EXIT_FLAG
                         DW      TERSE_UNTIL
                         DW      TERSE_RETURN
 
@@ -1447,14 +1506,14 @@ store_new_high_score_flag:
 ; enters a short inline TERSE program so the common text word can consume its
 ; pointer and screen-position operands directly.
                         CALL    READ_LANGUAGE_SELECTION
-                        CP      $00
+                        CP      LANGUAGE_ENGLISH
                         JR      NZ,game_over_not_english
                         RST     $08
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_EN
                         DB      $B4,$2C,$FF            ; Y, X, double size
                         DW      TERSE_RETURN
-game_over_not_english:  CP      $01
+game_over_not_english:  CP      LANGUAGE_GERMAN
                         JR      NZ,draw_game_over_french
                         RST     $08
                         DW      TERSE_DRAW_TEXT_INLINE
@@ -1481,7 +1540,7 @@ PROCESS_SHIP_HIT:
 process_target_hit:     BIT     5,(HL)
                         JP      Z,next_target_hit
                         RES     5,(HL)
-                        BIT     3,(HL)
+                        BIT     OBJECT_FLAG_HIT_SIDE_BIT,(HL)
                         LD      DE,RIGHT_SCORE_BCD_LO
                         LD      A,(RIGHT_LAMP_STATE)
                         LD      C,PORT_RIGHT_LAMPS
@@ -1678,7 +1737,7 @@ CHECK_PATROL_END_OR_EXTENDED_PLAY:
                         OR      A
                         JR      NZ,finish_patrol
                         IN      A,(PORT_DIP_SWITCHES)
-                        AND     EXTENDED_SCORE_DIP_MASK
+                        AND     DIP_EXTENDED_PLAY_MASK
                         JR      Z,finish_patrol
                         ADD     A,EXTENDED_SCORE_BASE_BCD
                         LD      E,A
@@ -1721,7 +1780,7 @@ patrol_end_check_done:  POP     BC
 start_extended_patrol: XOR     A
                         LD      (PATROL_COMPLETE_FLAG),A
                         IN      A,(PORT_DIP_SWITCHES)
-                        AND     GAME_TIME_DIP_MASK
+                        AND     DIP_PLAY_TIME_MASK
                         RLCA
                         LD      DE,$4535
                         JR      Z,extended_time_selected
@@ -1734,7 +1793,7 @@ start_extended_patrol: XOR     A
                         LD      DE,$2020
 extended_time_selected:
                         LD      A,(ACTIVE_PLAYER_COUNT)
-                        CP      $02
+                        CP      PLAYER_COUNT_TWO
                         LD      A,D
                         JR      Z,store_extended_time
                         LD      A,E
@@ -1800,7 +1859,7 @@ SERVICE_STATION_RELOADS:
                         LD      DE,LEFT_RELOAD_TIMER
                         LD      HL,LEFT_TORPEDOES_REMAINING
                         LD      A,(ACTIVE_PLAYER_COUNT)
-                        CP      $02
+                        CP      PLAYER_COUNT_TWO
                         CALL    Z,RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES
                         INC     C
                         INC     DE
@@ -1968,7 +2027,7 @@ target_sequence_ready:  LD      (TARGET_TYPE_SEQUENCE_CURSOR),HL
                         LD      A,B
                         CP      OBJECT_TYPE_FREIGHTER_A
                         JR      NZ,target_type_ready
-                        LD      A,($C1DB)
+                        LD      A,(GAME_TIME_BCD)
                         CP      $24
                         LD      A,OBJECT_TYPE_FREIGHTER_A
                         JR      NC,target_type_ready
@@ -2063,14 +2122,14 @@ POLL_TORPEDO_FIRE:
                         PUSH    BC
                         PUSH    IY
                         LD      A,(ACTIVE_PLAYER_COUNT)
-                        CP      $02
+                        CP      PLAYER_COUNT_TWO
                         JR      NZ,poll_right_torpedo
-                        LD      C,PORT_P2_HANDLE
+                        LD      C,PORT_LEFT_STATION_HANDLE
                         LD      DE,LEFT_RELOAD_TIMER
                         LD      HL,LEFT_TORPEDOES_REMAINING
                         LD      IY,TORPEDO_POOL_LEFT_BASE
                         CALL    UPDATE_PLAYER_TORPEDO_FIRE
-poll_right_torpedo:     LD      C,PORT_P1_HANDLE
+poll_right_torpedo:     LD      C,PORT_RIGHT_STATION_HANDLE
                         LD      DE,RIGHT_RELOAD_TIMER
                         LD      HL,RIGHT_TORPEDOES_REMAINING
                         LD      IY,TORPEDO_POOL_RIGHT_BASE
@@ -2090,13 +2149,13 @@ UPDATE_PLAYER_TORPEDO_FIRE:
                         RET     Z
                         DEC     HL
                         IN      A,(C)
-                        AND     $80
+                        AND     HANDLE_FIRE_MASK
                         CP      (HL)
                         RET     Z
                         LD      (HL),A
                         OR      A
                         RET     Z
-                        LD      A,$80
+                        LD      A,HANDLE_FIRE_MASK
                         LD      (SOUND_DIVE_PAN_XOR),A
                         INC     HL
                         DEC     (HL)
@@ -2148,7 +2207,7 @@ torpedo_aim_nonnegative:
                         LD      A,$3E
 torpedo_aim_in_range:   AND     $3E
                         LD      HL,TORPEDO_TRAJECTORY_LEFT_TABLE
-                        BIT     0,C
+                        BIT     STATION_PORT_PARITY_BIT,C
                         JR      Z,torpedo_trajectory_table
                         LD      HL,TORPEDO_TRAJECTORY_RIGHT_TABLE
 torpedo_trajectory_table:
@@ -2168,7 +2227,7 @@ torpedo_velocity_ready: LD      (IY+OBJECT_FLAGS),OBJECT_FLAG_ACTIVE
 ; Port $10 is the left station and port $11 is the right station in the sound
 ; wiring.  A new torpedo holds its corresponding trigger high for $38 frames.
 TRIGGER_TORPEDO_SOUND:
-                        BIT     0,C
+                        BIT     STATION_PORT_PARITY_BIT,C
                         LD      HL,SOUND_LEFT_TORPEDO_TIMER
                         JR      Z,torpedo_sound_selected
                         LD      HL,SOUND_RIGHT_TORPEDO_TIMER
@@ -2187,10 +2246,10 @@ INITIALIZE_TORPEDO_OBJECT:
                         LD      (IY+OBJECT_Y_MIN),$23
                         LD      (IY+OBJECT_X_MAX),$9C
                         LD      (IY+OBJECT_MAGIC_MODE),$08
-                        LD      (IY+OBJECT_BITMAP_PTR_HI),$11 ; BITMAP_TORPEDO_NEAR high
-                        LD      (IY+OBJECT_BITMAP_PTR_LO),$2D ; BITMAP_TORPEDO_NEAR low
+                        LD      (IY+OBJECT_BITMAP_PTR_HI),BITMAP_TORPEDO_NEAR_HI
+                        LD      (IY+OBJECT_BITMAP_PTR_LO),BITMAP_TORPEDO_NEAR_LO
                         LD      A,$08
-                        BIT     0,C
+                        BIT     STATION_PORT_PARITY_BIT,C
                         JR      Z,torpedo_color_selected
                         LD      A,$04
 torpedo_color_selected: LD      (IY+OBJECT_COLOR),A
@@ -2199,7 +2258,7 @@ torpedo_color_selected: LD      (IY+OBJECT_COLOR),A
 DECODE_HANDLE_POSITION:
                         PUSH    BC
                         PUSH    DE
-                        AND     $3F
+                        AND     RAW_HANDLE_POSITION_MASK
                         LD      C,A
                         LD      B,A
                         LD      D,$20
@@ -2284,7 +2343,7 @@ hit_score_frame_limit_ready:
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_BLANK_HIT_SCORE
                         CALL    DRAW_TEXT
-                        BIT     3,(IY+OBJECT_FLAGS)
+                        BIT     OBJECT_FLAG_HIT_SIDE_BIT,(IY+OBJECT_FLAGS)
                         LD      A,(RIGHT_LAMP_STATE)
                         LD      C,PORT_RIGHT_LAMPS
                         JR      Z,restore_hit_lamps
@@ -2391,7 +2450,7 @@ INITIALIZE_OBJECT_POOLS:
                         LD      A,(TARGET_POOL_BASE+OBJECT_FLAGS)
                         BIT     7,A
                         JR      NZ,object_pools_ready
-                        LD      A,($C032+OBJECT_FLAGS)
+                        LD      A,(TARGET_LANE_LOWER_BASE+OBJECT_FLAGS)
                         BIT     7,A
                         JR      NZ,object_pools_ready
                         PUSH    BC
@@ -2412,7 +2471,7 @@ INITIALIZE_OBJECT_POOLS:
                         LDIR
                         LD      A,OBJECT_FLAG_ACTIVE
                         LD      (TARGET_POOL_BASE+OBJECT_FLAGS),A
-                        LD      ($C032+OBJECT_FLAGS),A
+                        LD      (TARGET_LANE_LOWER_BASE+OBJECT_FLAGS),A
                         LD      (TORPEDO_POOL_LEFT_BASE+OBJECT_FLAGS),A
                         LD      (TORPEDO_POOL_RIGHT_BASE+OBJECT_FLAGS),A
                         POP     BC
@@ -2516,7 +2575,7 @@ DRAW_HIGH_SCORE_WORD:   PUSH    BC
                         POP     BC
                         JP      (IY)
 
-DRAW_HIGH_SCORE:        LD      HL,$C209
+DRAW_HIGH_SCORE:        LD      HL,HIGH_SCORE_BCD_HI
                         LD      A,$76
                         LD      (TEXT_X_POSITION_HI),A
                         LD      A,$02
@@ -2728,7 +2787,7 @@ INITIAL_LEFT_TORPEDO_TEMPLATE:
                         DB      $00,$00                 ; X velocity supplied later
                         DB      $00,$20                 ; initial X position $2000
                         DB      $00,$9F                 ; reserved $10, X maximum
-                        DB      $2D,$11                 ; BITMAP_TORPEDO_NEAR
+                        DB      BITMAP_TORPEDO_NEAR_LO,BITMAP_TORPEDO_NEAR_HI
                         DB      $08                     ; normal Magic-RAM direction
                         DB      $00,$00                 ; no prior VRAM address
                         DB      $08,$00                 ; left color, near frame
@@ -2742,7 +2801,7 @@ INITIAL_RIGHT_TORPEDO_TEMPLATE:
                         DB      $00,$00                 ; X velocity supplied later
                         DB      $00,$78                 ; initial X position $7800
                         DB      $00,$9F                 ; reserved $10, X maximum
-                        DB      $2D,$11                 ; BITMAP_TORPEDO_NEAR
+                        DB      BITMAP_TORPEDO_NEAR_LO,BITMAP_TORPEDO_NEAR_HI
                         DB      $08                     ; normal Magic-RAM direction
                         DB      $00,$00                 ; no prior VRAM address
                         DB      $04,$00                 ; right color, near frame
@@ -2917,7 +2976,7 @@ video_interrupt_handler_body:
                         ; while this interrupt performs the frame workload.
                         EI
                         ; Intentional input read; its value is discarded.
-                        IN      A,(PORT_P2_HANDLE)
+                        IN      A,(PORT_LEFT_STATION_HANDLE)
                         LD      HL,SOUND_FRAME_DIVIDER
                         LD      A,(HL)
                         INC     (HL)
@@ -3016,7 +3075,7 @@ coin_input_stable:      IN      A,(PORT_COIN_START)
                         IN      A,(PORT_COIN_START)
                         CP      B
                         JR      NZ,coin_input_stable
-                        AND     $01
+                        AND     COIN_INPUT_MASK
                         LD      HL,COIN_INPUT_EDGE_LATCH
                         PUSH    AF
                         XOR     (HL)
@@ -3109,7 +3168,7 @@ ERASE_AND_DEACTIVATE_OBJECT:
 CLEAR_PLAYER_HIT_STREAK:
                         PUSH    IX
                         POP     HL
-                        BIT     0,L
+                        BIT     STATION_PORT_PARITY_BIT,L
                         LD      HL,RIGHT_HIT_STREAK_COUNT
                         JR      NZ,hit_streak_selected
                         LD      HL,LEFT_HIT_STREAK_COUNT
@@ -3226,10 +3285,10 @@ SELECT_COLLISION_SOUND_SIDE:
                         PUSH    IX
                         POP     HL
                         LD      D,COLLISION_SOUND_SIDE_RIGHT
-                        RES     3,(IY+OBJECT_FLAGS)
-                        BIT     0,L
+                        RES     OBJECT_FLAG_HIT_SIDE_BIT,(IY+OBJECT_FLAGS)
+                        BIT     STATION_PORT_PARITY_BIT,L
                         JR      NZ,collision_side_selected
-                        SET     3,(IY+OBJECT_FLAGS)
+                        SET     OBJECT_FLAG_HIT_SIDE_BIT,(IY+OBJECT_FLAGS)
                         LD      D,COLLISION_SOUND_SIDE_LEFT
 collision_side_selected:
                         LD      B,(IX+OBJECT_COLOR)
@@ -3455,7 +3514,7 @@ DRAW_PLAYER_STATUS:
                         LD      A,(ACTIVE_PLAYER_COUNT)
                         OR      A
                         RET     Z
-                        CP      $02
+                        CP      PLAYER_COUNT_TWO
                         JR      NZ,draw_right_status_panel
                         LD      B,$00
                         LD      D,PLAYER_STATUS_Y
@@ -3756,7 +3815,7 @@ ERASE_OBJECT_BITMAP:    LD      H,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      H,(IX+OBJECT_VRAM_ADDR_HI)
                         LD      L,(IX+OBJECT_VRAM_ADDR_LO)
                         XOR     A
-                        OUT     ($0C),A
+                        OUT     (PORT_MAGIC_CONTROL),A
                         XOR     A
                         LD      C,A
 erase_object_row:       LD      B,E
@@ -3835,7 +3894,7 @@ draw_forward_expanded:  LD      A,(HL)
                         DJNZ    draw_forward_expanded
 finish_forward_row:     XOR     A
                         LD      (DE),A
-                        LD      ($3FFF),A
+                        LD      (MAGIC_SCRATCH_WRITE_1),A
                         POP     DE
                         DEC     C
                         RET     Z
@@ -3863,7 +3922,7 @@ DRAW_OBJECT_BITMAP_REVERSED:
                         SLA     B
 reverse_width_ready:    LD      A,(IX+OBJECT_MAGIC_MODE)
                         XOR     $03
-                        OUT     ($0C),A
+                        OUT     (PORT_MAGIC_CONTROL),A
                         PUSH    HL
                         LD      L,B
                         LD      H,$00
@@ -3891,7 +3950,7 @@ draw_reverse_expanded:  LD      A,(HL)
                         DJNZ    draw_reverse_expanded
 finish_reverse_row:     XOR     A
                         LD      (DE),A
-                        LD      ($3FFF),A
+                        LD      (MAGIC_SCRATCH_WRITE_1),A
                         POP     DE
                         DEC     C
                         RET     Z
@@ -3907,9 +3966,9 @@ finish_reverse_row:     XOR     A
 ; Torpedo frames are a vertical byte stream.  Each source byte is duplicated
 ; horizontally and successive bytes advance one $50-byte video row.
 DRAW_TORPEDO_BITMAP:    LD      A,(IX+OBJECT_COLOR)
-                        OUT     ($19),A
+                        OUT     (PORT_MAGIC_EXPAND),A
                         LD      A,(IX+OBJECT_MAGIC_MODE)
-                        OUT     ($0C),A
+                        OUT     (PORT_MAGIC_CONTROL),A
                         LD      D,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      E,(IX+OBJECT_BITMAP_PTR_LO)
                         LD      H,(IX+OBJECT_VRAM_ADDR_HI)
@@ -3952,9 +4011,9 @@ CALCULATE_OBJECT_SCREEN_ADDRESS:
 ; coordinate mapper inserts the sub-byte horizontal shift into B.
 PREPARE_OBJECT_RENDER:  CALL    CALCULATE_OBJECT_SCREEN_ADDRESS
                         LD      A,(IX+OBJECT_COLOR)
-                        OUT     ($19),A
+                        OUT     (PORT_MAGIC_EXPAND),A
                         LD      A,B
-                        OUT     ($0C),A
+                        OUT     (PORT_MAGIC_CONTROL),A
                         LD      (IX+OBJECT_MAGIC_MODE),B
                         LD      (IX+OBJECT_VRAM_ADDR_HI),H
                         LD      (IX+OBJECT_VRAM_ADDR_LO),L
@@ -4044,7 +4103,7 @@ CLAMP_OBJECT_X_AND_FLAG_BOUNDARY:
                         RET
 
 ;-------------------------------------------------------------------------------
-; $19D8: Raster schedule selected when DIP-switch bit 6 is set
+; $19D8: Color-monitor raster schedule selected by S1-7
 ;-------------------------------------------------------------------------------
 ; Each record is:
 ;   DB scanline, reserved, color4, color5, color6, color7
@@ -4054,47 +4113,47 @@ CLAMP_OBJECT_X_AND_FLAG_BOUNDARY:
 ; $30, $54.  The handler and motion words in each record configure the following
 ; scanline.  The $0C record therefore selects the full frame service at $18.
 ; Records $0C, $18, $30 and $54 animate bases $18, $30, $54 and $84.
-INTERRUPT_SCHEDULE_SET_A:
-interrupt_schedule_a_84:
+COLOR_MONITOR_INTERRUPT_SCHEDULE:
+color_monitor_schedule_84:
                         DB      $84,$00,$DC,$77,$58,$00
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
-interrupt_schedule_a_d7:
+color_monitor_schedule_d7:
                         DB      $D7,$00,$1C,$77,$58,$00
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
-interrupt_schedule_a_0c:
+color_monitor_schedule_0c:
                         DB      $0C,$00,$D8,$77,$58,$00
                         DW      VIDEO_INTERRUPT_HANDLER,RASTER_MOTION_STATE_0 ; next: $18
-interrupt_schedule_a_18:
+color_monitor_schedule_18:
                         DB      $18,$00,$D9,$77,$58,$00
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_1 ; next: $30
-interrupt_schedule_a_30:
+color_monitor_schedule_30:
                         DB      $30,$00,$DA,$77,$58,$00
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_2 ; next: $54
-interrupt_schedule_a_54:
+color_monitor_schedule_54:
                         DB      $54,$00,$DB,$77,$58,$00
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_3 ; next: $84
                         DB      RASTER_SCHEDULE_END,$FF   ; second byte is table padding
 
 ;-------------------------------------------------------------------------------
-; $1A16: Raster schedule selected when DIP-switch bit 6 is clear
+; $1A16: Black-and-white-monitor raster schedule selected by S1-7
 ;-------------------------------------------------------------------------------
-INTERRUPT_SCHEDULE_SET_B:
-interrupt_schedule_b_84:
+MONOCHROME_MONITOR_INTERRUPT_SCHEDULE:
+monochrome_monitor_schedule_84:
                         DB      $84,$00,$00,$03,$07,$05
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
-interrupt_schedule_b_d7:
+monochrome_monitor_schedule_d7:
                         DB      $D7,$00,$01,$03,$07,$05
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,$0000
-interrupt_schedule_b_0c:
+monochrome_monitor_schedule_0c:
                         DB      $0C,$00,$00,$03,$07,$05
                         DW      VIDEO_INTERRUPT_HANDLER,RASTER_MOTION_STATE_0 ; next: $18
-interrupt_schedule_b_18:
+monochrome_monitor_schedule_18:
                         DB      $18,$00,$00,$03,$07,$05
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_1 ; next: $30
-interrupt_schedule_b_30:
+monochrome_monitor_schedule_30:
                         DB      $30,$00,$00,$03,$07,$05
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_2 ; next: $54
-interrupt_schedule_b_54:
+monochrome_monitor_schedule_54:
                         DB      $54,$00,$00,$03,$07,$05
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_3 ; next: $84
                         DB      RASTER_SCHEDULE_END
@@ -4255,23 +4314,30 @@ TEXT_BONUS:
 ; $1B59: Nine English prompt pointer lists
 ;-------------------------------------------------------------------------------
 ENGLISH_PROMPT_TABLE_0:
-                        DW      $1BC3,$1C5D,$1BD9,$1BEF,$1C05,$1C1B,$0000
+                        DW      ENGLISH_PROMPT_LINE_0,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_1,ENGLISH_PROMPT_LINE_2
+                        DW      ENGLISH_PROMPT_LINE_3,ENGLISH_PROMPT_LINE_4,$0000
 ENGLISH_PROMPT_TABLE_1:
-                        DW      $1BC3,$1C5D,$1C31,$1C5D,$1C5D,$1C5D,$0000
+                        DW      ENGLISH_PROMPT_LINE_0,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_5,ENGLISH_PROMPT_LINE_7
+                        DW      ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_7,$0000
 ENGLISH_PROMPT_TABLE_2:
-                        DW      $1BC3,$1C5D,$1BD9,$1BEF,$1C31,$0000
+                        DW      ENGLISH_PROMPT_LINE_0,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_1
+                        DW      ENGLISH_PROMPT_LINE_2,ENGLISH_PROMPT_LINE_5,$0000
 ENGLISH_PROMPT_TABLE_3:
-                        DW      $1C05,$1C5D,$0000
+                        DW      ENGLISH_PROMPT_LINE_3,ENGLISH_PROMPT_LINE_7,$0000
 ENGLISH_PROMPT_TABLE_4:
-                        DW      $1BC3,$1C5D,$1BD9,$1BEF,$1C31,$0000
+                        DW      ENGLISH_PROMPT_LINE_0,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_1
+                        DW      ENGLISH_PROMPT_LINE_2,ENGLISH_PROMPT_LINE_5,$0000
 ENGLISH_PROMPT_TABLE_5:
-                        DW      $1C05,$1C5D,$0000
+                        DW      ENGLISH_PROMPT_LINE_3,ENGLISH_PROMPT_LINE_7,$0000
 ENGLISH_PROMPT_TABLE_6:
-                        DW      $1BC3,$1C5D,$1BD9,$1BEF,$1C47,$1C1B,$0000
+                        DW      ENGLISH_PROMPT_LINE_0,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_1,ENGLISH_PROMPT_LINE_2
+                        DW      ENGLISH_PROMPT_LINE_6,ENGLISH_PROMPT_LINE_4,$0000
 ENGLISH_PROMPT_TABLE_7:
-                        DW      $1C05,$1C1B,$1C5D,$1C5D,$1C5D,$1C5D,$0000
+                        DW      ENGLISH_PROMPT_LINE_3,ENGLISH_PROMPT_LINE_4,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_7
+                        DW      ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_7,$0000
 ENGLISH_PROMPT_TABLE_8:
-                        DW      $1BC3,$1C5D,$1C31,$1C5D,$1C5D,$1C5D,$0000
+                        DW      ENGLISH_PROMPT_LINE_0,ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_5,ENGLISH_PROMPT_LINE_7
+                        DW      ENGLISH_PROMPT_LINE_7,ENGLISH_PROMPT_LINE_7,$0000
 
 ENGLISH_PROMPT_LINE_0:
                         DB      $54,$4F,$40,$53,$54,$41,$52,$54,$40,$47,$41,$4D,$45,$40,$40,$40,$40,$40,$40,$40,$40,$00 ; $1BC3  TO START GAME
@@ -4301,23 +4367,30 @@ ENGLISH_PROMPT_LINE_7:
 ; $1C73: Nine German prompt pointer lists
 ;-------------------------------------------------------------------------------
 GERMAN_PROMPT_TABLE_0:
-                        DW      $1CDD,$1CF4,$1D0B,$1D22,$1D39,$1D50,$0000
+                        DW      GERMAN_PROMPT_LINE_0,GERMAN_PROMPT_LINE_1,GERMAN_PROMPT_LINE_2,GERMAN_PROMPT_LINE_3
+                        DW      GERMAN_PROMPT_LINE_4,GERMAN_PROMPT_LINE_5,$0000
 GERMAN_PROMPT_TABLE_1:
-                        DW      $1D67,$1CF4,$1D7E,$1E7B,$1E7B,$1E7B,$0000
+                        DW      GERMAN_PROMPT_LINE_6,GERMAN_PROMPT_LINE_1,GERMAN_PROMPT_LINE_7,GERMAN_PROMPT_LINE_18
+                        DW      GERMAN_PROMPT_LINE_18,GERMAN_PROMPT_LINE_18,$0000
 GERMAN_PROMPT_TABLE_2:
-                        DW      $1D95,$1DAC,$1DC3,$1E7B,$1E7B,$0000
+                        DW      GERMAN_PROMPT_LINE_8,GERMAN_PROMPT_LINE_9,GERMAN_PROMPT_LINE_10
+                        DW      GERMAN_PROMPT_LINE_18,GERMAN_PROMPT_LINE_18,$0000
 GERMAN_PROMPT_TABLE_3:
-                        DW      $1DDA,$1DF1,$0000
+                        DW      GERMAN_PROMPT_LINE_11,GERMAN_PROMPT_LINE_12,$0000
 GERMAN_PROMPT_TABLE_4:
-                        DW      $1D95,$1DAC,$1DC3,$1E7B,$1E7B,$0000
+                        DW      GERMAN_PROMPT_LINE_8,GERMAN_PROMPT_LINE_9,GERMAN_PROMPT_LINE_10
+                        DW      GERMAN_PROMPT_LINE_18,GERMAN_PROMPT_LINE_18,$0000
 GERMAN_PROMPT_TABLE_5:
-                        DW      $1DDA,$1DF1,$0000
+                        DW      GERMAN_PROMPT_LINE_11,GERMAN_PROMPT_LINE_12,$0000
 GERMAN_PROMPT_TABLE_6:
-                        DW      $1CDD,$1CF4,$1D0B,$1E08,$1E1F,$1E36,$0000
+                        DW      GERMAN_PROMPT_LINE_0,GERMAN_PROMPT_LINE_1,GERMAN_PROMPT_LINE_2,GERMAN_PROMPT_LINE_13
+                        DW      GERMAN_PROMPT_LINE_14,GERMAN_PROMPT_LINE_15,$0000
 GERMAN_PROMPT_TABLE_7:
-                        DW      $1DDA,$1E4D,$1E64,$1D50,$1E7B,$1E7B,$0000
+                        DW      GERMAN_PROMPT_LINE_11,GERMAN_PROMPT_LINE_16,GERMAN_PROMPT_LINE_17,GERMAN_PROMPT_LINE_5
+                        DW      GERMAN_PROMPT_LINE_18,GERMAN_PROMPT_LINE_18,$0000
 GERMAN_PROMPT_TABLE_8:
-                        DW      $1D67,$1CF4,$1D7E,$1E7B,$1E7B,$1E7B,$0000
+                        DW      GERMAN_PROMPT_LINE_6,GERMAN_PROMPT_LINE_1,GERMAN_PROMPT_LINE_7,GERMAN_PROMPT_LINE_18
+                        DW      GERMAN_PROMPT_LINE_18,GERMAN_PROMPT_LINE_18,$0000
 
 GERMAN_PROMPT_LINE_0:
                         DB      $44,$52,$55,$45,$43,$4B,$45,$4E,$40,$53,$49,$45,$40,$31,$40,$53,$50,$49,$45,$4C,$45,$52,$00 ; $1CDD  DRUECKEN SIE 1 SPIELER
@@ -4380,23 +4453,30 @@ GERMAN_PROMPT_LINE_18:
 ; $1E92: Nine French prompt pointer lists
 ;-------------------------------------------------------------------------------
 FRENCH_PROMPT_TABLE_0:
-                        DW      $1EFC,$1F13,$1F2A,$1F41,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_0,FRENCH_PROMPT_LINE_1,FRENCH_PROMPT_LINE_2,FRENCH_PROMPT_LINE_3
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_1:
-                        DW      $1EFC,$1F58,$1F9D,$1F9D,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_0,FRENCH_PROMPT_LINE_4,FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_2:
-                        DW      $1EFC,$1F6F,$1F9D,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_0,FRENCH_PROMPT_LINE_5,FRENCH_PROMPT_LINE_7
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_3:
-                        DW      $1F2A,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_2,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_4:
-                        DW      $1EFC,$1F6F,$1F9D,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_0,FRENCH_PROMPT_LINE_5,FRENCH_PROMPT_LINE_7
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_5:
-                        DW      $1F2A,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_2,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_6:
-                        DW      $1EFC,$1F13,$1F86,$1F41,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_0,FRENCH_PROMPT_LINE_1,FRENCH_PROMPT_LINE_6,FRENCH_PROMPT_LINE_3
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_7:
-                        DW      $1F2A,$1F41,$1F9D,$1F9D,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_2,FRENCH_PROMPT_LINE_3,FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 FRENCH_PROMPT_TABLE_8:
-                        DW      $1EFC,$1F58,$1F9D,$1F9D,$1F9D,$1F9D,$0000
+                        DW      FRENCH_PROMPT_LINE_0,FRENCH_PROMPT_LINE_4,FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7
+                        DW      FRENCH_PROMPT_LINE_7,FRENCH_PROMPT_LINE_7,$0000
 
 FRENCH_PROMPT_LINE_0:
                         DB      $50,$4F,$55,$52,$40,$4A,$4F,$55,$45,$52,$40,$41,$50,$50,$55,$59,$45,$52,$40,$40,$40,$40,$00 ; $1EFC  POUR JOUER APPUYER
