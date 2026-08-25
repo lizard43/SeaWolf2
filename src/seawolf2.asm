@@ -62,15 +62,15 @@ PORT_COLOR_4            EQU     $04
 PORT_COLOR_5            EQU     $05
 PORT_COLOR_6            EQU     $06
 PORT_COLOR_7            EQU     $07
-PORT_VIDEO_MODE         EQU     $08
+PORT_VIDEO_MODE         EQU     $08 ; write; reads return/clear FG intercept
 PORT_COLOR_SPLIT        EQU     $09
 PORT_VBLANK_LINE        EQU     $0A
 PORT_COLOR_BLOCK        EQU     $0B
-PORT_MAGIC_CONTROL      EQU     $0C
+PORT_FUNCGEN_CONTROL    EQU     $0C
 PORT_INTERRUPT_VECTOR   EQU     $0D
 PORT_INTERRUPT_ENABLE   EQU     $0E
 PORT_INTERRUPT_LINE     EQU     $0F
-PORT_MAGIC_EXPAND       EQU     $19
+PORT_EXPAND_COLOR       EQU     $19
 PORT_LEFT_STATION_HANDLE  EQU   $10
 PORT_RIGHT_STATION_HANDLE EQU   $11
 PORT_COIN_START         EQU     $12
@@ -176,7 +176,7 @@ LANGUAGE_FRENCH         EQU     $02
 INITIAL_INTERRUPT_ENABLE EQU   $08
 INITIAL_COLOR_SPLIT_VALUE EQU  $2A
 
-PROMPT_TEXT_COLOR       EQU     $0C
+PROMPT_TEXT_COLOR       EQU     EXPAND_COLORS_0_3
 PROMPT_TEXT_X           EQU     $28
 PROMPT_INITIAL_Y        EQU     $3E
 PROMPT_LINE_Y_STEP      EQU     $0C
@@ -192,15 +192,54 @@ VIDEO_ROW_STRIDE        EQU     $0050
 TEXT_DOUBLE_ROW_STRIDE  EQU     $00A0
 TEXT_NORMAL_X_ADVANCE   EQU     $0400
 TEXT_DOUBLE_X_ADVANCE   EQU     $0800
-MAGIC_MODE_TEXT_NORMAL  EQU     $08
-MAGIC_MODE_TEXT_DOUBLE  EQU     $18
-MAGIC_EXPAND_DEFAULT    EQU     $0C
-MAGIC_SCRATCH_WRITE_0   EQU     $3FFE
-MAGIC_SCRATCH_WRITE_1   EQU     $3FFF
-MAGIC_SCRATCH_READ_0    EQU     $7FFE
-MAGIC_SCRATCH_READ_1    EQU     $7FFF
 
-PLAYER_STATUS_COLOR     EQU     $0C
+; Function Generator control register at port $0C.  The hardware pipeline is
+; expand -> shift/rotate -> flop -> OR/XOR -> display RAM.  Bits 0-1 select a
+; shift of 0-3 two-bit pixels.  Expand alternates high and low source nibbles;
+; rotate buffers the first four writes and emits four transposed bytes on the
+; next four; flop reverses the four two-bit pixels in one byte.  OR/XOR combine
+; with the addressed display byte and update intercept feedback readable at
+; port $08.  Writing port $0C resets the shift latch, expansion phase and rotate
+; counter.  Bit 7 has no hardware function.
+FUNCGEN_SHIFT_MASK          EQU $03
+FUNCGEN_ROTATE_BIT          EQU $02
+FUNCGEN_EXPAND_BIT          EQU $03
+FUNCGEN_OR_BIT              EQU $04
+FUNCGEN_XOR_BIT             EQU $05
+FUNCGEN_FLOP_BIT            EQU $06
+FUNCGEN_ROTATE_MASK         EQU $04
+FUNCGEN_EXPAND_MASK         EQU $08
+FUNCGEN_OR_MASK             EQU $10
+FUNCGEN_XOR_MASK            EQU $20
+FUNCGEN_FLOP_MASK           EQU $40
+
+FUNCGEN_MODE_REPLACE        EQU $00
+FUNCGEN_MODE_EXPAND         EQU $08
+FUNCGEN_MODE_EXPAND_OR      EQU $18
+FUNCGEN_MODE_EXPAND_FLOP    EQU $48
+
+; Observed controls are $00, $08-$0B, $18 and $48-$4B.  The low two bits of
+; object modes vary with horizontal position.  OR appears only in double-size
+; text.  This ROM never asserts rotate or XOR.
+
+; Port $19 packs the output color for a zero source bit in bits 0-1 and the
+; output color for a one source bit in bits 2-3.  Sea Wolf II always maps zero
+; to color 0 and selects color 1, 2 or 3 for set pixels.
+EXPAND_COLORS_0_1           EQU $04
+EXPAND_COLORS_0_2           EQU $08
+EXPAND_COLORS_0_3           EQU $0C
+
+; CPU writes to $0000-$3FFF pass through the Function Generator and land at
+; display RAM $4000-$7FFF.  The last two bytes form a safe expansion/shift
+; scratch pair: write through $3FFE/$3FFF, then read the result at $7FFE/$7FFF.
+MAGIC_WRITE_WINDOW_BASE     EQU $0000
+MAGIC_WRITE_WINDOW_LIMIT    EQU $4000
+FUNCGEN_SCRATCH_WRITE_0     EQU $3FFE
+FUNCGEN_SCRATCH_WRITE_1     EQU $3FFF
+FUNCGEN_SCRATCH_READ_0      EQU $7FFE
+FUNCGEN_SCRATCH_READ_1      EQU $7FFF
+
+PLAYER_STATUS_COLOR     EQU     EXPAND_COLORS_0_3
 PLAYER_STATUS_Y         EQU     $B8
 PLAYER_STATUS_LEFT_X    EQU     $07
 PLAYER_STATUS_RIGHT_X   EQU     $82
@@ -287,9 +326,9 @@ OBJECT_RESERVED_10          EQU $10
 OBJECT_X_MAX                EQU $11
 OBJECT_BITMAP_PTR_LO        EQU $12
 OBJECT_BITMAP_PTR_HI        EQU $13
-OBJECT_MAGIC_MODE           EQU $14
-OBJECT_VRAM_ADDR_LO         EQU $15
-OBJECT_VRAM_ADDR_HI         EQU $16
+OBJECT_FUNCGEN_CONTROL      EQU $14
+OBJECT_MAGIC_ADDR_LO        EQU $15 ; Function Generator write-window address
+OBJECT_MAGIC_ADDR_HI        EQU $16
 OBJECT_COLOR                EQU $17
 OBJECT_ANIMATION_FRAME      EQU $18
 
@@ -297,6 +336,12 @@ OBJECT_ANIMATION_FRAME      EQU $18
 ; No constructor, updater, renderer or collision path reads or writes them as
 ; fields, so they remain explicitly reserved rather than receiving speculative
 ; meanings.
+;
+; OBJECT_FUNCGEN_CONTROL holds the port-$0C mode.  Constructors seed expand
+; and optional flop; MAP_COORDINATES_TO_MAGIC_ADDRESS replaces bits 0-1 with
+; the current pixel shift.  OBJECT_MAGIC_ADDR is the saved CPU write-window
+; address in $0000-$3FFF, not the display-RAM read address.  OBJECT_COLOR is the
+; packed port-$19 expansion pair used whenever the object is drawn.
 
 BITMAP_SOURCE_WIDTH         EQU $00
 BITMAP_ROW_COUNT            EQU $01
@@ -662,7 +707,7 @@ self_test_clear_video:  LD      (HL),$00
 ; Each of the four $0800-byte program ROMs has additive checksum $FF.  HL is
 ; deliberately allowed to advance across block boundaries; H therefore also
 ; identifies the block when a checksum fails.
-                        LD      A,$0C
+                        LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         LD      A,$32
                         LD      (TEXT_X_POSITION_HI),A
@@ -918,7 +963,7 @@ SELF_TEST_MODE_SELECT:
 SELF_TEST_INTERACTIVE:
 ; Display the decoded six-bit position of both optical handles.  The left
 ; string begins at X=0 and the right string at X=$78, both on row $78.
-                        LD      A,$0C
+                        LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         LD      A,$78
                         LD      (TEXT_Y_POSITION),A
@@ -1805,7 +1850,7 @@ store_extended_time:   LD      (GAME_TIME_BCD),A
                         LD      (TEXT_Y_POSITION),A
                         LD      A,$28
                         LD      (TEXT_X_POSITION_HI),A
-                        LD      A,$0C
+                        LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_EXTENDED_PATROL
                         PUSH    BC
@@ -1837,7 +1882,7 @@ UPDATE_GAME_TIME_DISPLAY:
                         LD      (TEXT_Y_POSITION),A
                         LD      A,$4C
                         LD      (TEXT_X_POSITION_HI),A
-                        LD      A,$0C
+                        LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         CALL    DRAW_TEXT
                         INC     SP
@@ -1913,7 +1958,8 @@ spawn_near_mine_lane:   LD      HL,MINE_LANE_UPPER_BASE
 
 ; HL addresses the first of two records in one mine lane; D is the fixed Y
 ; coordinate.  Allocate the first inactive record and stagger its X coordinate
-; from the other mine in the lane.  Inactive OBJECT_TIMER does not gate reuse;
+; from the other mine in the lane.  Mines use expand/replace with set pixels
+; mapped to color 3.  Inactive OBJECT_TIMER does not gate reuse;
 ; CLEAR_OBJECT_RECORD removes all prior collision/animation state.
 ACTIVATE_MINE_IN_LANE:  BIT     7,(HL)
                         JR      NZ,try_second_mine_slot
@@ -1940,8 +1986,8 @@ mine_x_ready:           LD      (IY+OBJECT_X_POSITION_HI),A
                         LD      (IY+OBJECT_TYPE),OBJECT_TYPE_MINE
                         LD      (IY+OBJECT_X_VELOCITY_LO),$80
                         LD      (IY+OBJECT_X_MAX),$A0
-                        LD      (IY+OBJECT_MAGIC_MODE),$08
-                        LD      (IY+OBJECT_COLOR),$0C
+                        LD      (IY+OBJECT_FUNCGEN_CONTROL),FUNCGEN_MODE_EXPAND
+                        LD      (IY+OBJECT_COLOR),EXPAND_COLORS_0_3
                         LD      (IY+OBJECT_FLAGS),OBJECT_FLAG_ACTIVE
                         RET
 
@@ -2000,11 +2046,13 @@ allocate_second_target:
                         POP     AF
 target_slot_selected:   PUSH    AF
                         CALL    CLEAR_OBJECT_RECORD
+; Port $19 maps clear source bits to color 0.  The random carry selects color
+; 1 or 2 for set target pixels.
                         LD      A,R
                         RRA
-                        LD      A,$04
+                        LD      A,EXPAND_COLORS_0_1
                         JR      C,target_color_ready
-                        LD      A,$08
+                        LD      A,EXPAND_COLORS_0_2
 target_color_ready:     LD      (IY+OBJECT_COLOR),A
                         LD      A,L
                         CP      TARGET_LANE_LOWER_Y
@@ -2039,7 +2087,7 @@ target_sequence_ready:  LD      (TARGET_TYPE_SEQUENCE_CURSOR),HL
                         CALL    SHOW_SUPER_SUB_ANNOUNCEMENT
                         LD      A,OBJECT_TYPE_SUPER_SUB
 target_type_ready:      LD      (IY+OBJECT_TYPE),A
-                        LD      (IY+OBJECT_MAGIC_MODE),$08
+                        LD      (IY+OBJECT_FUNCGEN_CONTROL),FUNCGEN_MODE_EXPAND
 
 ; Convert the type's signed byte speed to 8.8 fixed point by multiplying by
 ; four.  Carry saved on entry selects leftward or rightward travel.
@@ -2065,7 +2113,9 @@ target_right_limit_ready:
                         POP     AF
                         JR      NC,target_direction_ready
                         LD      (IY+OBJECT_X_MAX),$A0
-                        SET     6,(IY+OBJECT_MAGIC_MODE)
+; Left-moving targets set Function Generator flop.  The renderer also walks
+; destination addresses backward, producing a complete horizontal mirror.
+                        SET     FUNCGEN_FLOP_BIT,(IY+OBJECT_FUNCGEN_CONTROL)
                         LD      B,(IY+OBJECT_X_VELOCITY_HI)
                         LD      A,(IY+OBJECT_X_VELOCITY_LO)
                         CPL
@@ -2089,17 +2139,19 @@ target_direction_ready: LD      A,(IY+OBJECT_TYPE)
                         CP      OBJECT_TYPE_SUPER_SUB
                         JR      NZ,START_SONAR_SEQUENCE
 
-; The Super Sub begins the dive effect.  $F0 supplies both the descending
-; three-bit pan code and the first port-$41 bit-3 trigger edge.
+; The Super Sub begins the dive effect.  Function Generator flop is also the
+; persistent left/right direction flag used to orient the pan sweep.  $F0
+; supplies both the descending three-bit pan code and the first port-$41 bit-3
+; trigger edge.
 START_DIVE_SOUND:
                         LD      A,$F0
                         LD      (SOUND_DIVE_PAN_TIMER),A
-                        BIT     6,(IY+OBJECT_MAGIC_MODE)
+                        BIT     FUNCGEN_FLOP_BIT,(IY+OBJECT_FUNCGEN_CONTROL)
                         LD      A,$87
                         JR      Z,dive_pan_selected
                         LD      A,$80
 dive_pan_selected:      LD      (SOUND_DIVE_PAN_XOR),A
-                        LD      (IY+OBJECT_COLOR),$0C
+                        LD      (IY+OBJECT_COLOR),EXPAND_COLORS_0_3
                         JR      target_sound_done
 
 ; The PT Boat asserts one left pulse immediately, then seeds ten scheduled
@@ -2237,7 +2289,8 @@ torpedo_sound_selected: LD      (HL),TORPEDO_SOUND_TIMER_LOAD
 INITIALIZE_TORPEDO_OBJECT:
 ; Gameplay torpedoes start at Y=$BB00 with velocity -$0400 and acceleration
 ; +$000C.  The decoded handle selects initial X and signed X velocity from the
-; station-specific 32-entry trajectory table.
+; station-specific 32-entry trajectory table.  Left torpedoes expand set bits
+; to color 2; right torpedoes use color 1.
                         CALL    CLEAR_OBJECT_RECORD
                         LD      (IY+OBJECT_TYPE),OBJECT_TYPE_TORPEDO
                         LD      (IY+OBJECT_Y_ACCEL_LO),$0C
@@ -2245,13 +2298,13 @@ INITIALIZE_TORPEDO_OBJECT:
                         LD      (IY+OBJECT_Y_POSITION_HI),$BB
                         LD      (IY+OBJECT_Y_MIN),$23
                         LD      (IY+OBJECT_X_MAX),$9C
-                        LD      (IY+OBJECT_MAGIC_MODE),$08
+                        LD      (IY+OBJECT_FUNCGEN_CONTROL),FUNCGEN_MODE_EXPAND
                         LD      (IY+OBJECT_BITMAP_PTR_HI),BITMAP_TORPEDO_NEAR_HI
                         LD      (IY+OBJECT_BITMAP_PTR_LO),BITMAP_TORPEDO_NEAR_LO
-                        LD      A,$08
+                        LD      A,EXPAND_COLORS_0_2
                         BIT     STATION_PORT_PARITY_BIT,C
                         JR      Z,torpedo_color_selected
-                        LD      A,$04
+                        LD      A,EXPAND_COLORS_0_1
 torpedo_color_selected: LD      (IY+OBJECT_COLOR),A
                         RET
 
@@ -2372,7 +2425,7 @@ UPDATE_BONUS_DISPLAYS:
                         LD      (TEXT_Y_POSITION),A
                         LD      A,$00
                         LD      (TEXT_X_POSITION_HI),A
-                        LD      A,$08
+                        LD      A,EXPAND_COLORS_0_2
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_BONUS
                         LD      A,(LEFT_BONUS_DISPLAY_ACTIVE)
@@ -2381,7 +2434,7 @@ UPDATE_BONUS_DISPLAYS:
 
                         LD      A,$78
                         LD      (TEXT_X_POSITION_HI),A
-                        LD      A,$04
+                        LD      A,EXPAND_COLORS_0_1
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_BONUS
                         LD      A,(RIGHT_BONUS_DISPLAY_ACTIVE)
@@ -2399,7 +2452,7 @@ UPDATE_BONUS_DISPLAYS:
                         OR      A
                         CALL    NZ,DRAW_BCD_VALUE
 
-                        LD      A,$08
+                        LD      A,EXPAND_COLORS_0_2
                         LD      (TEXT_COLOR),A
                         LD      A,$07
                         LD      (TEXT_X_POSITION_HI),A
@@ -2499,7 +2552,7 @@ UPDATE_NEW_HIGH_SCORE_MESSAGE:
                         LD      A,$0A
                         LD      (TEXT_X_POSITION_HI),A
                         LD      A,(TEXT_COLOR)
-                        XOR     $0C
+                        XOR     EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_CONGRATULATIONS_EN
                         LD      A,(LANGUAGE_SELECTION)
@@ -2554,7 +2607,7 @@ TERSE_DRAW_TEXT_INLINE:
                         INC     BC
                         LD      H,A
                         LD      (TEXT_X_POSITION_LO),HL
-                        LD      A,$0C
+                        LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         EX      DE,HL
                         LD      A,(BC)
@@ -2662,7 +2715,7 @@ SHOW_SUPER_SUB_ANNOUNCEMENT:
                         LD      (TEXT_X_POSITION_HI),A
                         LD      A,$4B
                         LD      (TEXT_Y_POSITION),A
-                        LD      A,$0C
+                        LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_SUPER
                         CALL    DRAW_TEXT_DOUBLE_SIZE
@@ -2760,9 +2813,9 @@ INITIAL_UPPER_WARSHIP_TEMPLATE:
                         DB      $00,$00                 ; X position $0000
                         DB      $00,$8C                 ; reserved $10, X maximum
                         DB      $00,$00                 ; bitmap selected on first update
-                        DB      $08                     ; normal Magic-RAM direction
-                        DB      $00,$00                 ; no prior VRAM address
-                        DB      $04,$00                 ; color, animation frame
+                        DB      FUNCGEN_MODE_EXPAND     ; expand, forward direction
+                        DB      $00,$00                 ; no prior Magic write address
+                        DB      EXPAND_COLORS_0_1,$00   ; set pixels color 1, frame 0
 
 INITIAL_LOWER_SUPER_SUB_TEMPLATE:
                         DB      $00,OBJECT_TYPE_SUPER_SUB,$00 ; flags, type, timer
@@ -2774,9 +2827,9 @@ INITIAL_LOWER_SUPER_SUB_TEMPLATE:
                         DB      $00,$8C                 ; X position $8C00
                         DB      $00,$9F                 ; reserved $10, X maximum
                         DB      $00,$00                 ; bitmap selected on first update
-                        DB      $48                     ; reversed Magic-RAM direction
-                        DB      $00,$00                 ; no prior VRAM address
-                        DB      $0C,$00                 ; color, surfaced frame
+                        DB      FUNCGEN_MODE_EXPAND_FLOP ; expand + flop, reverse direction
+                        DB      $00,$00                 ; no prior Magic write address
+                        DB      EXPAND_COLORS_0_3,$00   ; set pixels color 3, surfaced frame
 
 INITIAL_LEFT_TORPEDO_TEMPLATE:
                         DB      $00,OBJECT_TYPE_TORPEDO,$00 ; flags, type, timer
@@ -2788,9 +2841,9 @@ INITIAL_LEFT_TORPEDO_TEMPLATE:
                         DB      $00,$20                 ; initial X position $2000
                         DB      $00,$9F                 ; reserved $10, X maximum
                         DB      BITMAP_TORPEDO_NEAR_LO,BITMAP_TORPEDO_NEAR_HI
-                        DB      $08                     ; normal Magic-RAM direction
-                        DB      $00,$00                 ; no prior VRAM address
-                        DB      $08,$00                 ; left color, near frame
+                        DB      FUNCGEN_MODE_EXPAND     ; expand, forward direction
+                        DB      $00,$00                 ; no prior Magic write address
+                        DB      EXPAND_COLORS_0_2,$00   ; left set pixels color 2, near frame
 
 INITIAL_RIGHT_TORPEDO_TEMPLATE:
                         DB      $00,OBJECT_TYPE_TORPEDO,$00 ; flags, type, timer
@@ -2802,9 +2855,9 @@ INITIAL_RIGHT_TORPEDO_TEMPLATE:
                         DB      $00,$78                 ; initial X position $7800
                         DB      $00,$9F                 ; reserved $10, X maximum
                         DB      BITMAP_TORPEDO_NEAR_LO,BITMAP_TORPEDO_NEAR_HI
-                        DB      $08                     ; normal Magic-RAM direction
-                        DB      $00,$00                 ; no prior VRAM address
-                        DB      $04,$00                 ; right color, near frame
+                        DB      FUNCGEN_MODE_EXPAND     ; expand, forward direction
+                        DB      $00,$00                 ; no prior Magic write address
+                        DB      EXPAND_COLORS_0_1,$00   ; right set pixels color 1, near frame
 
 ;-------------------------------------------------------------------------------
 ; $0E3F: Object bitmap descriptors and animation frames
@@ -3183,8 +3236,8 @@ hit_streak_selected:
 UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
                         LD      (IX+OBJECT_BITMAP_PTR_HI),H
                         LD      (IX+OBJECT_BITMAP_PTR_LO),L
-                        LD      H,(IX+OBJECT_VRAM_ADDR_HI)
-                        LD      L,(IX+OBJECT_VRAM_ADDR_LO)
+                        LD      H,(IX+OBJECT_MAGIC_ADDR_HI)
+                        LD      L,(IX+OBJECT_MAGIC_ADDR_LO)
                         PUSH    HL                      ; previous draw address
                         CALL    INTEGRATE_OBJECT_MOTION
                         BIT     4,(IX+OBJECT_FLAGS)
@@ -3200,11 +3253,12 @@ UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
                         OR      L
                         JP      Z,DRAW_NEW_TORPEDO_FRAME
 
-; Probe seven Magic-RAM bytes relative to the torpedo's prior draw address:
-; $3F60, $3F61, $3FB0, $3FB1, $40A0, $40F0, and $4140.  Any nonzero bit in
-; the first four bytes is accepted.  The final three contribute only bits 6-7.
-; This cheap pixel test gates the lane/coordinate test below; it does not by
-; itself select the collided record.
+; Probe seven display-RAM bytes relative to the torpedo's saved Magic write
+; address: +$3F60, +$3F61, +$3FB0, +$3FB1, +$40A0, +$40F0 and +$4140.  The
+; constants cross from the $0000-$3FFF write window into readable display RAM.
+; Any nonzero bit in the first four bytes is accepted; the final three
+; contribute only bits 6-7.  This cheap pixel test gates the lane/coordinate
+; test below; it does not by itself select the collided record.
                         LD      DE,$3F60
                         ADD     HL,DE
                         LD      A,(HL)
@@ -3332,7 +3386,7 @@ next_collision_candidate:
                         DJNZ    scan_collision_candidates
                         RET
 ; Select the torpedo perspective frame from its Y coordinate, then use the
-; compact duplicated-pixel renderer.
+; one-byte-per-row Function Generator expander.
 DRAW_NEW_TORPEDO_FRAME:
                         LD      A,(IX+OBJECT_Y_POSITION_HI)
                         LD      B,$00
@@ -3416,7 +3470,7 @@ DRAW_CHARACTER:
 
                         LD      DE,(TEXT_Y_POSITION_LO)
                         LD      HL,(TEXT_X_POSITION_LO)
-                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        CALL    MAP_COORDINATES_TO_MAGIC_ADDRESS
                         POP     DE                     ; font source
 
 ; Supply a blank row immediately above the glyph.  The helper returns HL at
@@ -3433,15 +3487,18 @@ DRAW_CHARACTER_ROWS:
                         OR      A
                         JR      NZ,draw_double_size_character_row
 
-; Normal glyph: duplicate each source byte into two adjacent Magic-RAM bytes,
-; advance one $50-byte video row per source row, then add a lower blank row.
+; Normal glyph: port $19 maps source 0/1 to the selected background/foreground
+; colors and $08 enables expansion with replacement writes.  Programming port
+; $0C resets the expansion phase.  The first write expands the source byte's
+; high nibble and the second expands its low nibble, producing eight two-bit
+; pixels across two display bytes.  Rows advance by $50; a blank row follows.
 draw_normal_character_row:
                         PUSH    HL
                         LD      A,(TEXT_COLOR)
                         DI
-                        OUT     (PORT_MAGIC_EXPAND),A
-                        LD      A,MAGIC_MODE_TEXT_NORMAL
-                        OUT     (PORT_MAGIC_CONTROL),A
+                        OUT     (PORT_EXPAND_COLOR),A
+                        LD      A,FUNCGEN_MODE_EXPAND
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         LD      A,(DE)
                         LD      (HL),A
                         INC     HL
@@ -3461,31 +3518,37 @@ draw_normal_character_row:
                         LD      (TEXT_X_POSITION_LO),HL
                         RET
 
-; Double-size glyph: first expand one font byte through the Magic-RAM scratch
-; pair, then duplicate both expanded bytes into four destination bytes.  A
-; $00A0 stride doubles vertical spacing; X advances by eight coordinate units.
+; Double-size glyph, stage 1: $0C maps clear bits to color 0 and set bits to
+; color 3.  Two writes of the font byte through $3FFE/$3FFF expand its high and
+; low nibbles into readable scratch bytes at $7FFE/$7FFF.
+;
+; Stage 2 re-expands each scratch byte with the requested text colors.  Mode
+; $18 is expand plus OR, so generated foreground pixels are combined with the
+; existing display instead of replacing it.  Two writes per scratch byte
+; consume both nibble phases and produce four destination bytes.  A $00A0 row
+; stride and eight-unit X advance select the double-size layout.
 draw_double_size_character_row:
                         PUSH    HL
-                        LD      A,MAGIC_EXPAND_DEFAULT
+                        LD      A,EXPAND_COLORS_0_3
                         DI
-                        OUT     (PORT_MAGIC_EXPAND),A
-                        LD      A,MAGIC_MODE_TEXT_NORMAL
-                        OUT     (PORT_MAGIC_CONTROL),A
+                        OUT     (PORT_EXPAND_COLOR),A
+                        LD      A,FUNCGEN_MODE_EXPAND
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         LD      A,(DE)
-                        LD      (MAGIC_SCRATCH_WRITE_0),A
+                        LD      (FUNCGEN_SCRATCH_WRITE_0),A
                         EI
-                        LD      (MAGIC_SCRATCH_WRITE_1),A
+                        LD      (FUNCGEN_SCRATCH_WRITE_1),A
 
                         LD      A,(TEXT_COLOR)
                         DI
-                        OUT     (PORT_MAGIC_EXPAND),A
-                        LD      A,MAGIC_MODE_TEXT_DOUBLE
-                        OUT     (PORT_MAGIC_CONTROL),A
-                        LD      A,(MAGIC_SCRATCH_READ_0)
+                        OUT     (PORT_EXPAND_COLOR),A
+                        LD      A,FUNCGEN_MODE_EXPAND_OR
+                        OUT     (PORT_FUNCGEN_CONTROL),A
+                        LD      A,(FUNCGEN_SCRATCH_READ_0)
                         LD      (HL),A
                         INC     HL
                         LD      (HL),A
-                        LD      A,(MAGIC_SCRATCH_READ_1)
+                        LD      A,(FUNCGEN_SCRATCH_READ_1)
                         INC     HL
                         LD      (HL),A
                         INC     HL
@@ -3519,37 +3582,39 @@ DRAW_PLAYER_STATUS:
                         LD      B,$00
                         LD      D,PLAYER_STATUS_Y
                         LD      HL,PLAYER_STATUS_LEFT_X_WORD
-                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        CALL    MAP_COORDINATES_TO_MAGIC_ADDRESS
                         LD      DE,PLAYER_STATUS_BITMAP
                         CALL    DRAW_SMALL_BITMAP
 draw_right_status_panel:
                         LD      B,$00
                         LD      D,PLAYER_STATUS_Y
                         LD      HL,PLAYER_STATUS_RIGHT_X_WORD
-                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        CALL    MAP_COORDINATES_TO_MAGIC_ADDRESS
                         LD      DE,PLAYER_STATUS_BITMAP
                         CALL    DRAW_SMALL_BITMAP
                         LD      B,$00
                         LD      D,PLAYER_STATUS_Y
                         LD      HL,PLAYER_STATUS_CENTER_X_WORD
-                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        CALL    MAP_COORDINATES_TO_MAGIC_ADDRESS
                         LD      DE,PLAYER_STATUS_CENTER_BITMAP
                         CALL    DRAW_SMALL_BITMAP
                         RET
 
 ;-------------------------------------------------------------------------------
-; $16BC: Render a compact bitmap through Magic RAM
+; $16BC: Render a compact one-bit bitmap through the Function Generator
 ;-------------------------------------------------------------------------------
-; DE addresses five rows of three source bytes.  Each byte is duplicated into
-; two destination bytes, producing six written bytes per row.
+; DE addresses five rows of three source bytes.  Mode $08 expands each source
+; byte's high and low nibble on successive writes, mapping 0 to color 0 and 1
+; to color 3.  Each source byte therefore produces two display bytes; each row
+; produces six.
 DRAW_SMALL_BITMAP:
                         LD      C,PLAYER_STATUS_ROWS
 draw_small_bitmap_row:  PUSH    HL
                         LD      A,PLAYER_STATUS_COLOR
                         DI
-                        OUT     (PORT_MAGIC_EXPAND),A
-                        LD      A,MAGIC_MODE_TEXT_NORMAL
-                        OUT     (PORT_MAGIC_CONTROL),A
+                        OUT     (PORT_EXPAND_COLOR),A
+                        LD      A,FUNCGEN_MODE_EXPAND
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         LD      B,PLAYER_STATUS_SOURCE_WIDTH
 draw_small_bitmap_byte: LD      A,(DE)
                         LD      (HL),A
@@ -3572,13 +3637,16 @@ small_bitmap_row_ready: DEC     C
 ;-------------------------------------------------------------------------------
 ; $16DF: Clear one two-byte character row and advance to the next video row
 ;-------------------------------------------------------------------------------
+; Two zero writes in expand mode consume both nibble phases.  Because every
+; text expansion pair maps source zero to color 0, the result is eight cleared
+; pixels across two display bytes.
 CLEAR_CHARACTER_ROW:
                         PUSH    HL
                         LD      A,(TEXT_COLOR)
                         DI
-                        OUT     (PORT_MAGIC_EXPAND),A
-                        LD      A,MAGIC_MODE_TEXT_NORMAL
-                        OUT     (PORT_MAGIC_CONTROL),A
+                        OUT     (PORT_EXPAND_COLOR),A
+                        LD      A,FUNCGEN_MODE_EXPAND
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         XOR     A
                         LD      (HL),A
                         INC     HL
@@ -3803,19 +3871,22 @@ advance_hit_frame:      INC     (IX+OBJECT_ANIMATION_FRAME)
                         LD      (IX+OBJECT_TIMER),RETIRED_OBJECT_TIMER_LOAD
                         RET
 
-; Clear the complete bounding box occupied by the prior bitmap.  The bitmap
-; descriptor begins with source-byte width and row count; VRAM rows are $50
-; bytes apart.
+; Clear the complete bounding box occupied by the prior bitmap.  Control $00
+; selects shift 0, no rotate/expand/blend/flop: every Magic-window write
+; replaces one display byte directly.  The saved address is the prior draw's
+; $0000-$3FFF Function Generator address.  For each descriptor row the routine
+; clears 2*(source width+1) bytes, covering expanded pixels and shift spill;
+; display rows are $50 bytes apart.
 ERASE_OBJECT_BITMAP:    LD      H,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      L,(IX+OBJECT_BITMAP_PTR_LO)
                         LD      E,(HL)
                         INC     E
                         INC     HL
                         LD      D,(HL)
-                        LD      H,(IX+OBJECT_VRAM_ADDR_HI)
-                        LD      L,(IX+OBJECT_VRAM_ADDR_LO)
-                        XOR     A
-                        OUT     (PORT_MAGIC_CONTROL),A
+                        LD      H,(IX+OBJECT_MAGIC_ADDR_HI)
+                        LD      L,(IX+OBJECT_MAGIC_ADDR_LO)
+                        XOR     A                       ; FUNCGEN_MODE_REPLACE
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         XOR     A
                         LD      C,A
 erase_object_row:       LD      B,E
@@ -3860,15 +3931,19 @@ LOOKUP_WORD_BY_INDEX:   SLA     A
                         EX      DE,HL
                         RET
 ;-------------------------------------------------------------------------------
-; $1856: Draw the selected bitmap in its configured horizontal direction
+; $1856: Expand and draw the selected one-bit object bitmap
 ;-------------------------------------------------------------------------------
-DRAW_OBJECT_BITMAP:     BIT     6,(IX+OBJECT_MAGIC_MODE)
+; Constructors seed control $08 for forward objects or $48 for reverse objects.
+; The coordinate mapper replaces control bits 0-1 with the current two-bit-
+; pixel shift.  Port $19 maps clear source bits to color 0 and set bits to the
+; object's selected color.  Neither object path uses OR, XOR or rotate.
+DRAW_OBJECT_BITMAP:     BIT     FUNCGEN_FLOP_BIT,(IX+OBJECT_FUNCGEN_CONTROL)
                         JP      NZ,DRAW_OBJECT_BITMAP_REVERSED
                         CALL    PREPARE_OBJECT_RENDER
                         LD      H,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      L,(IX+OBJECT_BITMAP_PTR_LO)
-                        LD      D,(IX+OBJECT_VRAM_ADDR_HI)
-                        LD      E,(IX+OBJECT_VRAM_ADDR_LO)
+                        LD      D,(IX+OBJECT_MAGIC_ADDR_HI)
+                        LD      E,(IX+OBJECT_MAGIC_ADDR_LO)
                         PUSH    HL
                         POP     IY
                         INC     HL
@@ -3877,7 +3952,7 @@ DRAW_OBJECT_BITMAP:     BIT     6,(IX+OBJECT_MAGIC_MODE)
 draw_object_forward_row:
                         LD      B,(IY+BITMAP_SOURCE_WIDTH)
                         PUSH    DE
-                        BIT     3,(IX+OBJECT_MAGIC_MODE)
+                        BIT     FUNCGEN_EXPAND_BIT,(IX+OBJECT_FUNCGEN_CONTROL)
                         JR      NZ,draw_forward_expanded
 draw_forward_byte:      LD      A,(HL)
                         LD      (DE),A
@@ -3886,15 +3961,20 @@ draw_forward_byte:      LD      A,(HL)
                         DJNZ    draw_forward_byte
                         JR      finish_forward_row
 draw_forward_expanded:  LD      A,(HL)
+; Two writes consume the expander's high- then low-nibble phases, producing
+; two display bytes from one one-bit source byte.
                         LD      (DE),A
                         INC     DE
                         LD      (DE),A
                         INC     DE
                         INC     HL
                         DJNZ    draw_forward_expanded
+; The destination zero write flushes the shift pipeline into the byte following
+; the bitmap.  The scratch zero write consumes the other expansion phase and
+; leaves zero in the previous-data latch before the next row.
 finish_forward_row:     XOR     A
                         LD      (DE),A
-                        LD      (MAGIC_SCRATCH_WRITE_1),A
+                        LD      (FUNCGEN_SCRATCH_WRITE_1),A
                         POP     DE
                         DEC     C
                         RET     Z
@@ -3905,11 +3985,14 @@ finish_forward_row:     XOR     A
                         INC     D
                         JR      draw_object_forward_row
 
-; Reverse drawing starts at the bitmap's right edge and walks VRAM backward.
+; Reverse drawing starts one expanded width beyond the saved left edge and
+; walks Magic addresses backward.  Flop reverses the four two-bit pixels within
+; each generated byte.  Complementing shift bits 0-1 with XOR $03 aligns that
+; byte-level flop with the backward address walk, completing the mirror.
 DRAW_OBJECT_BITMAP_REVERSED:
                         CALL    PREPARE_OBJECT_RENDER
-                        LD      D,(IX+OBJECT_VRAM_ADDR_HI)
-                        LD      E,(IX+OBJECT_VRAM_ADDR_LO)
+                        LD      D,(IX+OBJECT_MAGIC_ADDR_HI)
+                        LD      E,(IX+OBJECT_MAGIC_ADDR_LO)
                         LD      H,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      L,(IX+OBJECT_BITMAP_PTR_LO)
                         PUSH    HL
@@ -3917,12 +4000,12 @@ DRAW_OBJECT_BITMAP_REVERSED:
                         INC     HL
                         INC     HL
                         LD      B,(IY+BITMAP_SOURCE_WIDTH)
-                        BIT     3,(IX+OBJECT_MAGIC_MODE)
+                        BIT     FUNCGEN_EXPAND_BIT,(IX+OBJECT_FUNCGEN_CONTROL)
                         JR      Z,reverse_width_ready
                         SLA     B
-reverse_width_ready:    LD      A,(IX+OBJECT_MAGIC_MODE)
-                        XOR     $03
-                        OUT     (PORT_MAGIC_CONTROL),A
+reverse_width_ready:    LD      A,(IX+OBJECT_FUNCGEN_CONTROL)
+                        XOR     FUNCGEN_SHIFT_MASK
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         PUSH    HL
                         LD      L,B
                         LD      H,$00
@@ -3933,7 +4016,7 @@ reverse_width_ready:    LD      A,(IX+OBJECT_MAGIC_MODE)
 draw_object_reverse_row:
                         LD      B,(IY+BITMAP_SOURCE_WIDTH)
                         PUSH    DE
-                        BIT     3,(IX+OBJECT_MAGIC_MODE)
+                        BIT     FUNCGEN_EXPAND_BIT,(IX+OBJECT_FUNCGEN_CONTROL)
                         JR      NZ,draw_reverse_expanded
 draw_reverse_byte:      LD      A,(HL)
                         LD      (DE),A
@@ -3942,15 +4025,18 @@ draw_reverse_byte:      LD      A,(HL)
                         DJNZ    draw_reverse_byte
                         JR      finish_reverse_row
 draw_reverse_expanded:  LD      A,(HL)
+; The same high-/low-nibble expansion order is emitted at descending addresses.
                         LD      (DE),A
                         DEC     DE
                         LD      (DE),A
                         DEC     DE
                         INC     HL
                         DJNZ    draw_reverse_expanded
+; Flush the trailing shifted pixels, balance expansion phase, and clear the
+; Function Generator previous-data latch exactly as in the forward path.
 finish_reverse_row:     XOR     A
                         LD      (DE),A
-                        LD      (MAGIC_SCRATCH_WRITE_1),A
+                        LD      (FUNCGEN_SCRATCH_WRITE_1),A
                         POP     DE
                         DEC     C
                         RET     Z
@@ -3963,16 +4049,18 @@ finish_reverse_row:     XOR     A
 ;-------------------------------------------------------------------------------
 ; $18FA: Draw the narrow perspective torpedo bitmap
 ;-------------------------------------------------------------------------------
-; Torpedo frames are a vertical byte stream.  Each source byte is duplicated
-; horizontally and successive bytes advance one $50-byte video row.
+; Torpedo frames are a vertical one-byte-per-row stream.  Control $08 plus the
+; mapped shift expands each source byte: the two writes consume its high and
+; low nibbles and produce two display bytes.  Torpedoes never set flop and do
+; not use OR/XOR/rotate.  Successive source bytes advance one $50-byte row.
 DRAW_TORPEDO_BITMAP:    LD      A,(IX+OBJECT_COLOR)
-                        OUT     (PORT_MAGIC_EXPAND),A
-                        LD      A,(IX+OBJECT_MAGIC_MODE)
-                        OUT     (PORT_MAGIC_CONTROL),A
+                        OUT     (PORT_EXPAND_COLOR),A
+                        LD      A,(IX+OBJECT_FUNCGEN_CONTROL)
+                        OUT     (PORT_FUNCGEN_CONTROL),A
                         LD      D,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      E,(IX+OBJECT_BITMAP_PTR_LO)
-                        LD      H,(IX+OBJECT_VRAM_ADDR_HI)
-                        LD      L,(IX+OBJECT_VRAM_ADDR_LO)
+                        LD      H,(IX+OBJECT_MAGIC_ADDR_HI)
+                        LD      L,(IX+OBJECT_MAGIC_ADDR_LO)
                         INC     DE
                         LD      A,(DE)
                         LD      B,A
@@ -3991,11 +4079,11 @@ torpedo_row_address_ready:
                         DJNZ    draw_torpedo_row
                         RET
 
-; Convert fixed-point object coordinates to a video address and Magic-RAM
-; shift.  OBJECT_Y_POSITION_HI is the bitmap's bottom edge, so its row count is
-; subtracted before mapping the top-left draw position.
+; Convert fixed-point object coordinates to a Function Generator write address
+; and shift.  OBJECT_Y_POSITION_HI is the bitmap's bottom edge, so its row
+; count is subtracted before mapping the top-left draw position.
 CALCULATE_OBJECT_SCREEN_ADDRESS:
-                        LD      B,(IX+OBJECT_MAGIC_MODE)
+                        LD      B,(IX+OBJECT_FUNCGEN_CONTROL)
                         LD      A,(IX+OBJECT_Y_POSITION_HI)
                         LD      H,(IX+OBJECT_BITMAP_PTR_HI)
                         LD      L,(IX+OBJECT_BITMAP_PTR_LO)
@@ -4004,24 +4092,26 @@ CALCULATE_OBJECT_SCREEN_ADDRESS:
                         LD      D,A
                         LD      H,(IX+OBJECT_X_POSITION_HI)
                         LD      L,(IX+OBJECT_X_POSITION_LO)
-                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        CALL    MAP_COORDINATES_TO_MAGIC_ADDRESS
                         RET
 
-; Program the object's color/mode and retain the mapped VRAM address.  The
-; coordinate mapper inserts the sub-byte horizontal shift into B.
+; Program the port-$19 expansion colors and port-$0C control, then retain the
+; mapped $0000-$3FFF write-window address.  The coordinate mapper inserts the
+; horizontal two-bit-pixel shift into control bits 0-1.
 PREPARE_OBJECT_RENDER:  CALL    CALCULATE_OBJECT_SCREEN_ADDRESS
                         LD      A,(IX+OBJECT_COLOR)
-                        OUT     (PORT_MAGIC_EXPAND),A
+                        OUT     (PORT_EXPAND_COLOR),A
                         LD      A,B
-                        OUT     (PORT_MAGIC_CONTROL),A
-                        LD      (IX+OBJECT_MAGIC_MODE),B
-                        LD      (IX+OBJECT_VRAM_ADDR_HI),H
-                        LD      (IX+OBJECT_VRAM_ADDR_LO),L
+                        OUT     (PORT_FUNCGEN_CONTROL),A
+                        LD      (IX+OBJECT_FUNCGEN_CONTROL),B
+                        LD      (IX+OBJECT_MAGIC_ADDR_HI),H
+                        LD      (IX+OBJECT_MAGIC_ADDR_LO),L
                         RET
 
-; D = video row; HL = 8.8 horizontal coordinate; B = base Magic-RAM mode.
-; Returns HL as row*80 + x/2 and merges the two-bit pixel shift into B.
-MAP_OBJECT_COORDINATES_TO_VRAM:
+; D = video row; HL = 8.8 horizontal coordinate; B = base Function Generator
+; control.  Returns the Magic-window address HL=row*80+x/2.  The doubled 8.8 X
+; coordinate supplies shift 0-3 in B bits 0-1; all other control bits survive.
+MAP_COORDINATES_TO_MAGIC_ADDRESS:
                         LD      A,$03
                         CPL
                         AND     B
