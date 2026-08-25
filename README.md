@@ -26,6 +26,9 @@ not describe that structure correctly.
   reconstructed as native Z80.
 - All nine object type IDs, their target classes, speeds, scores, bitmap lists,
   hit animations, collision lanes, and torpedo perspective frames are mapped.
+- Torpedo, surface-target, mine, and Super Sub lifecycles are traced from
+  allocation through scheduling, movement, drawing, collision, scoring,
+  sound, animation, retirement, and reuse.
 - Both six-entry raster schedules, their IM 2 vector selection, the primary and
   alternate interrupt handlers, and the four moving split-line states are fully
   decoded.
@@ -33,7 +36,7 @@ not describe that structure correctly.
   collision producers, sonar sequence, dive effect, and coin-counter pulse are
   labeled and documented.
 - The remaining `DB` regions are inventoried by address and type. They contain
-  1,611 bytes of native Z80 awaiting promotion, 22 bytes of TERSE, verified
+  1,105 bytes of native Z80 awaiting promotion, 22 bytes of TERSE, verified
   tables and graphics, ROM fill, and one uncertain byte at `$1385`.
 
 ## ROM organization
@@ -98,6 +101,115 @@ only when fewer than 24 BCD seconds remain and the `$C1F7` counter is below two.
 It displays `SUPER` / `SUB`, starts the dive sound, advances through two dive
 frames every 42 target updates, and skips directly to its explosion sequence
 when hit.
+
+## Object lifecycles
+
+The video interrupt services the object pools at fixed round-robin rates:
+
+| Pool | Records | Calls per 60 Hz frame | Per-record rate |
+| --- | ---: | ---: | ---: |
+| Surface targets | 4 | 2 | 30 Hz |
+| Player torpedoes | 8 | 4 | 30 Hz |
+| Mines | 6 | 1 | 10 Hz |
+
+Inactive target and mine records still have `OBJECT_TIMER` decremented by their
+schedulers. Neither allocator tests that timer; reuse is controlled by
+`OBJECT_FLAG_ACTIVE`, and allocation clears the complete 25-byte record.
+
+### Player torpedo
+
+`POLL_TORPEDO_FIRE` detects a fire-button edge for each active station.
+`UPDATE_PLAYER_TORPEDO_FIRE` decrements the four-shot magazine, updates the
+ready/reload lamps, and allocates that station's records in order 3, 2, 1, 0.
+The left and right records are interleaved in `$C0FA-$C1A9`; records for one
+station are `$32` bytes apart. The fourth shot starts the `$A0`-frame reload
+timer.
+
+`INITIALIZE_TORPEDO_OBJECT` sets Y=`$BB00`, Y velocity=`-$0400`, Y
+acceleration=`+$000C`, Y minimum=`$23`, and the near perspective bitmap. The
+decoded handle position indexes the station-specific table at `$0D48` or
+`$0D88`, which supplies initial X and signed X velocity. Activation starts the
+left or right torpedo sound for `$38` video frames.
+
+`UPDATE_TORPEDO_OBJECT` runs at 30 Hz. It integrates the 8.8 coordinates,
+selects near/middle/far frames at Y=`$78/$46/$00`, and probes seven Magic-RAM
+bytes from the preceding draw for collision pixels. Y selects one of five
+two-record lanes:
+
+| Y range | Collision pool |
+| ---: | --- |
+| `$82+` | Lower mine lane `$C0C8` |
+| `$64-$81` | Middle mine lane `$C096` |
+| `$4C-$63` | Upper mine lane `$C064` |
+| `$33-$4B` | Lower target lane `$C032` |
+| `$23-$32` | Upper target lane `$C000` |
+
+A ship collision deactivates the torpedo, marks the target for hit animation
+and foreground scoring, records station ownership in target flag bit 3, copies
+the torpedo color to the target, and starts `shiphit` for `$40` frames. A mine
+collision deactivates the torpedo, marks the mine for hit animation, clears the
+station's consecutive-ship-hit streak, and starts `minehit` for `$08` frames.
+A boundary miss also clears the streak before the torpedo is erased and made
+inactive.
+
+### Surface target
+
+`ACTIVATE_TARGET_IN_LANE` maintains two records in each target lane. An inactive
+first slot is reused immediately. A second target is admitted only after the
+first reaches X=`$80` moving right or crosses below X=`$20` moving left. The
+constructor consumes the cyclic type list at `$0DC8`, assigns color `$04` or
+`$08`, converts the type speed to 8.8 motion, and selects the draw direction.
+Right-moving targets start at X=`$00`; left-moving targets start at `$8C`, or
+`$96` for the PT Boat. Boundary exit erases the bitmap and clears `ACTIVE`.
+
+A torpedo collision sets `HIT_ANIMATION` for the interrupt path and
+`HIT_PENDING` for `PROCESS_SHIP_HIT`. The foreground path consumes
+`HIT_PENDING` once, adds the type's packed-BCD score, redraws the station score,
+draws the temporary value beside the target, and preserves the firing station's
+hit streak. Four consecutive ship hits add their accumulated BCD value to the
+score a second time, reset the streak, and display `BONUS` plus the awarded
+value for `$78` frames.
+
+Target explosion frames advance every six target visits: 12 video frames, or
+about 0.2 seconds. Warship A/C use six hit frames; Warship B and both freighters
+use five; the PT Boat uses three. The score overlay is erased on animation frame
+3. The zero pointer ending each bitmap list clears `ACTIVE` and leaves
+`OBJECT_TIMER=$2D`; that timer does not gate target allocation.
+
+The PT Boat follows the same movement, collision, score, and retirement path.
+Its constructor additionally starts the ten-ping alternating sonar sequence.
+
+### Mine
+
+Mines are created only when a station completes reload. The larger player's
+low packed-BCD score byte controls the active lane count: below `$10` creates an
+upper-lane mine, `$10-$19` also creates a middle-lane mine, and `$20+` also
+creates a lower-lane mine. These are 1000- and 2000-point thresholds. Each lane
+has two slots; one inactive slot is populated per reload and its X position is
+staggered from the other slot modulo `$A0`.
+
+A live mine moves right by 0.5 pixel per 10 Hz visit. At X=`$A0` it wraps to
+X=`$0000`, integrates once, and remains active. A torpedo hit does not enter
+`PROCESS_SHIP_HIT` and awards no score. The mine displays its single hit bitmap
+for one mine visit, reaches the zero animation pointer on the next visit, and
+clears `ACTIVE`.
+
+### Super Sub diving target
+
+The no-player initialization path seeds one Super Sub template. During normal
+play, only a `FREIGHTER_A` sequence entry can be promoted. Promotion requires
+game time below `$24` packed BCD and `SUPER_SUB_SPAWN_COUNT < 2`. The
+constructor presents `SUPER` / `SUB` while object service is held, starts the
+dive effect, and then activates the target.
+
+The Super Sub otherwise uses the surface-target scheduler and 1.0-pixel motion.
+Its animation advances from surfaced to dive frame 1 and dive frame 2 every 42
+target visits. At 30 Hz this is 84 video frames, about 1.4 seconds per step;
+dive frame 2 persists until exit or collision. A hit skips directly to
+explosion frame 3, awards 1000 points, and removes the score overlay on frame 5.
+
+This pass promoted the lifecycle support code at `$06B5-$0734`,
+`$0B4C-$0BDE`, `$0C6E-$0D47`, and `$15D7-$15E3` from raw bytes to labeled Z80.
 
 ## TERSE
 

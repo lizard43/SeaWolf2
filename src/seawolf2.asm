@@ -11,11 +11,11 @@
 ; Remaining raw-region inventory
 ;
 ; Every byte still emitted with DB is classified below.  The inventory covers
-; 4,377 bytes in 35 classified address regions; no DB byte is omitted.  Native
+; 3,871 bytes in 32 classified address regions; no DB byte is omitted.  Native
 ; and TERSE spans are conversion work.  Table, graphics/text, and padding
 ; regions are true data, although their internal labels can still improve.
 ;
-; NATIVE Z80 AWAITING PROMOTION                 14 spans / 1,611 bytes
+; NATIVE Z80 AWAITING PROMOTION                 11 spans / 1,105 bytes
 ;   $0302-$0320  work/video clear primitive
 ;   $0321-$0354  machine and interrupt initialization
 ;   $0365-$036E  main-state initializer and TERSE entry
@@ -24,12 +24,9 @@
 ;   $0501-$0526  prompt pointer-list renderer
 ;   $0527-$0543  language-selection reader
 ;   $0593-$0612  playfield clear and score update
-;   $06B5-$0734  score/bonus and station-state handling
 ;   $0735-$07FB  extended-play, lamp and timer-display handling
-;   $0B4C-$0BDE  post-hit status and expired-score clearing
 ;   $0C1A-$0C55  congratulations state and display
-;   $0C6E-$0D47  text/BCD primitives and Super Sub presentation
-;   $15D7-$16F4  native text and small-bitmap renderer
+;   $15E4-$16F4  native text and small-bitmap renderer
 ;
 ; TERSE INTERPRETER PROGRAM                     1 span / 22 bytes
 ;   $036F-$0384  MAIN_INITIALIZATION_THREAD inline cells and operands
@@ -63,7 +60,7 @@
 ; GENUINELY UNCERTAIN                            1 span / 1 byte
 ;   $1385        unreferenced $8E between TEXT_SUB and the $1386 ISR entry
 ;
-; Inventory invariant: remaining DB byte count = 4,377.
+; Inventory invariant: remaining DB byte count = 3,871.
 ;===============================================================================
 
 PORT_COLOR_0            EQU     $00
@@ -102,15 +99,43 @@ WORK_RAM_LIMIT          EQU     $C400
 ; Native text renderer state used by the power-on and interactive diagnostics.
 TEXT_X_POSITION_LO      EQU     $C1FE
 TEXT_X_POSITION_HI      EQU     $C1FF
+TEXT_Y_POSITION_LO      EQU     $C200
 TEXT_Y_POSITION         EQU     $C201
 TEXT_COLOR              EQU     $C202
+TEXT_RENDER_LOCK        EQU     $C1DD
 
 SELF_TEST_TEXT_BUFFER   EQU     $C000
 SELF_TEST_ROM_BLOCK_SIZE EQU    $0800
 
 GAME_TIME_BCD           EQU     $C1DB
-LEFT_STATION_DISABLED   EQU     $C1E4
 ACTIVE_PLAYER_COUNT     EQU     $C1FB
+
+; Player score and torpedo-result state.  Each score is two packed-BCD bytes.
+; A ship hit clears the active-low redraw latch and advances the station's
+; consecutive-hit count/value.  A torpedo miss or mine collision clears that
+; streak; reaching four ship hits awards the accumulated value a second time.
+LEFT_SCORE_BCD_LO               EQU $C1E2
+LEFT_SCORE_BCD_HI               EQU $C1E3
+LEFT_SCORE_REDRAW_LATCH         EQU $C1E4
+LEFT_HIT_STREAK_COUNT           EQU $C1E5
+LEFT_HIT_STREAK_VALUE_BCD       EQU $C1E6
+RIGHT_SCORE_BCD_LO              EQU $C1E7
+RIGHT_SCORE_BCD_HI              EQU $C1E8
+RIGHT_SCORE_REDRAW_LATCH        EQU $C1E9
+RIGHT_HIT_STREAK_COUNT          EQU $C1EA
+RIGHT_HIT_STREAK_VALUE_BCD      EQU $C1EB
+
+LEFT_FIRE_EDGE_LATCH            EQU $C1EC
+LEFT_TORPEDOES_REMAINING        EQU $C1ED
+LEFT_LAMP_STATE                 EQU $C1EE
+RIGHT_FIRE_EDGE_LATCH           EQU $C1EF
+RIGHT_TORPEDOES_REMAINING       EQU $C1F0
+RIGHT_LAMP_STATE                EQU $C1F1
+RIGHT_BONUS_DISPLAY_ACTIVE      EQU $C1F2
+RIGHT_BONUS_DISPLAY_VALUE_BCD   EQU $C1F3
+LEFT_BONUS_DISPLAY_ACTIVE       EQU $C1F4
+LEFT_BONUS_DISPLAY_VALUE_BCD    EQU $C1F5
+SUPER_SUB_SPAWN_COUNT           EQU $C1F7
 
 ; SELF_TEST_PARAMETER_SET_* layout.  The first two bytes form an executable
 ; JR instruction.  A successful range test jumps through IY and executes that
@@ -187,6 +212,9 @@ SCORE_FREIGHTER_BCD         EQU $01
 SCORE_WARSHIP_BCD           EQU $03
 SCORE_PT_BOAT_BCD           EQU $05
 SCORE_SUPER_SUB_BCD         EQU $10
+HIT_STREAK_LENGTH           EQU $04
+BONUS_DISPLAY_ACTIVE_VALUE  EQU $3C
+BONUS_DISPLAY_DURATION      EQU $78
 
 ; Raw X-speed bytes are multiplied by four by ACTIVATE_TARGET_IN_LANE to form
 ; signed 8.8 velocities.  These become $0080, $0100 and $0200 per update.
@@ -291,7 +319,11 @@ SOUND_DIVE_PAN_TIMER        EQU $C1D9       ; bits 7-5 -> port $41 bits 2-0;
 
 SOUND_FRAME_DIVIDER         EQU $C1CA
 SOUND_TIMER_BLOCK           EQU $C1CB       ; 16 timers, $C1CB-$C1DA
+LEFT_RELOAD_TIMER           EQU $C1CB
+RIGHT_RELOAD_TIMER          EQU $C1CC
 SONAR_CADENCE_TIMER         EQU $C1CD
+RIGHT_BONUS_DISPLAY_TIMER   EQU $C1CE
+LEFT_BONUS_DISPLAY_TIMER    EQU $C1CF
 SONAR_PING_COUNT            EQU $C1E1
 SOUND_DIVE_PAN_XOR          EQU $C1FA
 
@@ -990,7 +1022,7 @@ clear_active_playfield: LD      (HL),$00
                         CP      $02
                         JR      Z,draw_initial_player_status
                         LD      A,$FF
-                        LD      (LEFT_STATION_DISABLED),A
+                        LD      (LEFT_SCORE_REDRAW_LATCH),A ; suppress absent P2 score
 draw_initial_player_status:
                         CALL    DRAW_PLAYER_STATUS
                         POP     BC
@@ -1176,7 +1208,7 @@ control_wait:           DW      TERSE_BEGIN
                         DW      $0735
 control_no_state:       DW      TERSE_INLINE_BFETCH,$C1FB
                         DW      TERSE_ZERO_BRANCH,control_no_player
-                        DW      ERASE_EXPIRED_HIT_SCORES,PROCESS_SHIP_HIT,$0711,UPDATE_SONAR_SEQUENCE
+                        DW      ERASE_EXPIRED_HIT_SCORES,PROCESS_SHIP_HIT,REFRESH_DIRTY_PLAYER_SCORES,UPDATE_SONAR_SEQUENCE
                         DW      TERSE_INLINE_BFETCH,$C1DF
                         DW      TERSE_BYTE_NOT
                         DW      TERSE_ZERO_BRANCH,control_continue
@@ -1221,12 +1253,12 @@ process_target_hit:     BIT     5,(HL)
                         JP      Z,next_target_hit
                         RES     5,(HL)
                         BIT     3,(HL)
-                        LD      DE,$C1E7
-                        LD      A,($C1F1)
+                        LD      DE,RIGHT_SCORE_BCD_LO
+                        LD      A,(RIGHT_LAMP_STATE)
                         LD      C,PORT_RIGHT_LAMPS
                         JR      Z,hit_station_selected
-                        LD      DE,$C1E2
-                        LD      A,($C1EE)
+                        LD      DE,LEFT_SCORE_BCD_LO
+                        LD      A,(LEFT_LAMP_STATE)
                         LD      C,PORT_LEFT_LAMPS
 hit_station_selected:   INC     HL                      ; OBJECT_TYPE
                         OR      $20
@@ -1238,7 +1270,8 @@ hit_station_selected:   INC     HL                      ; OBJECT_TYPE
                         EX      DE,HL
 
 ; Convert target type to the BCD score increment used by this record.  The
-; ordered IDs make the three score-class boundaries direct comparisons.
+; ordered IDs make the three score-class boundaries direct comparisons.  The
+; same increment is accumulated for the four-consecutive-hit bonus.
                         LD      B,SCORE_WARSHIP_BCD
                         CP      OBJECT_TYPE_FREIGHTER_A
                         JR      C,hit_score_value_ready
@@ -1271,7 +1304,7 @@ hit_score_value_ready:  LD      A,(HL)
                         LD      ($C202),A
                         PUSH    DE
                         PUSH    BC
-                        CALL    $06B5
+                        CALL    AWARD_FOUR_HIT_BONUS
                         POP     BC
                         SET     2,(IY+OBJECT_FLAGS)
                         LD      A,(IY+OBJECT_X_POSITION_HI)
@@ -1307,15 +1340,100 @@ next_target_hit:        LD      DE,OBJECT_RECORD_SIZE
                         POP     IY
                         POP     BC
                         JP      (IY)
-                        DB      $56,$2B,$7E,$FE,$04,$C0,$36,$00,$23,$36,$00,$2B,$2B,$2B ; $06B5
-                        DB      $2B,$7E,$82,$27,$77,$23,$7E,$CE,$00,$27,$77,$7D,$5D,$FE,$E3,$3E ; $06C3  +~.'w#~..'w}]..>
-                        DB      $78,$21,$F2,$C1,$01,$CE,$C1,$20,$08,$3E,$00,$21,$F4,$C1,$01,$CF ; $06D3  x!..... .>.!....
-                        DB      $C1,$36,$3C,$23,$72,$32,$FF,$C1,$3E,$96,$32,$01,$C2,$3E,$78,$02 ; $06E3  .6<#r2..>.2..>x.
-                        DB      $21,$53,$1B,$CD,$D7,$15,$7B,$FE,$E3,$3E,$82,$20,$02,$3E,$07,$32 ; $06F3  !S....{..>. .>.2
-                        DB      $FF,$C1,$3E,$AB,$32,$01,$C2,$4A,$06,$00,$CD,$AE,$0C,$C9,$21,$E4 ; $0703  ..>.2..J......!.
-                        DB      $C1,$7E,$B7,$20,$0A,$36,$FF,$2B,$3E,$07,$16,$0B,$CD,$B1,$0C,$21 ; $0713  .~. .6.+>......!
-                        DB      $E9,$C1,$7E,$B7,$20,$0A,$36,$FF,$2B,$3E,$82,$16,$07,$CD,$B1,$0C ; $0723  ..~. .6.+>......
-                        DB      $FD,$E9                                                         ; $0733  ..
+
+;-------------------------------------------------------------------------------
+; $06B5: Award and display the four-consecutive-ship-hit bonus
+;-------------------------------------------------------------------------------
+; HL enters at the station's accumulated BCD hit value.  The preceding byte is
+; its hit count and the four bytes before that are score low/high and redraw
+; state.  A miss or mine collision clears count/value in
+; CLEAR_PLAYER_HIT_STREAK.  Four ship hits therefore double the BCD value of
+; those four hits, reset the streak, and display BONUS plus the awarded value.
+AWARD_FOUR_HIT_BONUS:
+                        LD      D,(HL)
+                        DEC     HL
+                        LD      A,(HL)
+                        CP      HIT_STREAK_LENGTH
+                        RET     NZ
+                        LD      (HL),$00
+                        INC     HL
+                        LD      (HL),$00
+                        DEC     HL
+                        DEC     HL
+                        DEC     HL
+                        DEC     HL
+                        LD      A,(HL)
+                        ADD     A,D
+                        DAA
+                        LD      (HL),A
+                        INC     HL
+                        LD      A,(HL)
+                        ADC     A,$00
+                        DAA
+                        LD      (HL),A
+
+; L is $E3 for the left score-high byte and $E8 for the right.  E preserves
+; that selector while D carries the BCD bonus value.
+                        LD      A,L
+                        LD      E,L
+                        CP      $E3
+                        LD      A,$78
+                        LD      HL,RIGHT_BONUS_DISPLAY_ACTIVE
+                        LD      BC,RIGHT_BONUS_DISPLAY_TIMER
+                        JR      NZ,bonus_station_selected
+                        LD      A,$00
+                        LD      HL,LEFT_BONUS_DISPLAY_ACTIVE
+                        LD      BC,LEFT_BONUS_DISPLAY_TIMER
+bonus_station_selected:
+                        LD      (HL),BONUS_DISPLAY_ACTIVE_VALUE
+                        INC     HL
+                        LD      (HL),D
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$96
+                        LD      (TEXT_Y_POSITION),A
+                        LD      A,BONUS_DISPLAY_DURATION
+                        LD      (BC),A
+                        LD      HL,TEXT_BONUS
+                        CALL    DRAW_TEXT_BLOCKING
+
+                        LD      A,E
+                        CP      $E3
+                        LD      A,$82
+                        JR      NZ,bonus_value_x_ready
+                        LD      A,$07
+bonus_value_x_ready:    LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$AB
+                        LD      (TEXT_Y_POSITION),A
+                        LD      C,D
+                        LD      B,$00
+                        CALL    DRAW_BCD_VALUE
+                        RET
+
+;-------------------------------------------------------------------------------
+; $0711: Redraw either station score after PROCESS_SHIP_HIT changes it
+;-------------------------------------------------------------------------------
+; The score update clears its active-low latch.  This foreground TERSE word
+; redraws the packed-BCD score once and restores the latch to $FF.
+REFRESH_DIRTY_PLAYER_SCORES:
+                        LD      HL,LEFT_SCORE_REDRAW_LATCH
+                        LD      A,(HL)
+                        OR      A
+                        JR      NZ,right_score_refresh
+                        LD      (HL),$FF
+                        DEC     HL
+                        LD      A,$07
+                        LD      D,$0B
+                        CALL    DRAW_SCORE_AT_STATION
+right_score_refresh:    LD      HL,RIGHT_SCORE_REDRAW_LATCH
+                        LD      A,(HL)
+                        OR      A
+                        JR      NZ,score_refresh_done
+                        LD      (HL),$FF
+                        DEC     HL
+                        LD      A,$82
+                        LD      D,$07
+                        CALL    DRAW_SCORE_AT_STATION
+score_refresh_done:     JP      (IY)
 
 ;-------------------------------------------------------------------------------
 ; $0735: Extended-play qualification and lamp reset
@@ -1346,14 +1464,14 @@ CLEAR_PLAYER_LAMPS:
 SERVICE_STATION_RELOADS:
                         PUSH    BC
                         LD      C,PORT_LEFT_LAMPS
-                        LD      DE,$C1CB
-                        LD      HL,$C1ED
-                        LD      A,($C1FB)
+                        LD      DE,LEFT_RELOAD_TIMER
+                        LD      HL,LEFT_TORPEDOES_REMAINING
+                        LD      A,(ACTIVE_PLAYER_COUNT)
                         CP      $02
                         CALL    Z,RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES
                         INC     C
                         INC     DE
-                        LD      HL,$C1F0
+                        LD      HL,RIGHT_TORPEDOES_REMAINING
                         CALL    RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES
                         POP     BC
                         JP      (IY)
@@ -1363,8 +1481,9 @@ SERVICE_STATION_RELOADS:
 ;-------------------------------------------------------------------------------
 ; HL is the station's remaining-torpedo count, DE its reload timer, and C its
 ; lamp port.  Once both state bytes reach zero, the magazine returns to four
-; shots and the larger player score controls whether one, two, or all three
-; two-record mine lanes are populated.
+; shots.  The larger player's low packed-BCD score byte controls the mine lanes:
+; below $10 activates the upper lane, $10-$19 adds the middle lane, and $20+
+; adds the lower lane.  These correspond to 1000- and 2000-point thresholds.
 RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES:
                         LD      A,(HL)
                         OR      A
@@ -1377,9 +1496,9 @@ RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES:
                         OUT     (C),A
                         PUSH    IY
                         EXX
-                        LD      A,($C1E2)
+                        LD      A,(LEFT_SCORE_BCD_LO)
                         LD      D,A
-                        LD      A,($C1E7)
+                        LD      A,(RIGHT_SCORE_BCD_LO)
                         CP      D
                         JR      NC,mine_score_selected
                         LD      A,D
@@ -1402,7 +1521,8 @@ spawn_near_mine_lane:   LD      HL,MINE_LANE_UPPER_BASE
 
 ; HL addresses the first of two records in one mine lane; D is the fixed Y
 ; coordinate.  Allocate the first inactive record and stagger its X coordinate
-; from the other mine in the lane.
+; from the other mine in the lane.  Inactive OBJECT_TIMER does not gate reuse;
+; CLEAR_OBJECT_RECORD removes all prior collision/animation state.
 ACTIVATE_MINE_IN_LANE:  BIT     7,(HL)
                         JR      NZ,try_second_mine_slot
                         PUSH    HL
@@ -1454,7 +1574,9 @@ ACTIVATE_TARGET_LANES:  PUSH    IY
                         JP      (IY)
 
 ; HL addresses the first record in a two-record target lane.  The second target
-; is launched only after the first has crossed the lane's spawn threshold.
+; is launched only after the first has crossed X=$80 moving right or X=$20
+; moving left.  An inactive first record is reused immediately; its scheduler-
+; decayed OBJECT_TIMER is not an allocation condition.
 ACTIVATE_TARGET_IN_LANE:
                         PUSH    HL
                         POP     IY
@@ -1517,11 +1639,11 @@ target_sequence_ready:  LD      ($C20B),HL
                         CP      $24
                         LD      A,OBJECT_TYPE_FREIGHTER_A
                         JR      NC,target_type_ready
-                        LD      A,($C1F7)
+                        LD      A,(SUPER_SUB_SPAWN_COUNT)
                         CP      $02
                         JR      Z,target_type_ready
                         INC     A
-                        LD      ($C1F7),A
+                        LD      (SUPER_SUB_SPAWN_COUNT),A
                         CALL    SHOW_SUPER_SUB_ANNOUNCEMENT
                         LD      A,OBJECT_TYPE_SUPER_SUB
 target_type_ready:      LD      (IY+OBJECT_TYPE),A
@@ -1607,17 +1729,17 @@ target_sound_done:      LD      (IY+OBJECT_FLAGS),OBJECT_FLAG_ACTIVE
 POLL_TORPEDO_FIRE:
                         PUSH    BC
                         PUSH    IY
-                        LD      A,($C1FB)
+                        LD      A,(ACTIVE_PLAYER_COUNT)
                         CP      $02
                         JR      NZ,poll_right_torpedo
                         LD      C,PORT_P2_HANDLE
-                        LD      DE,$C1CB
-                        LD      HL,$C1ED
+                        LD      DE,LEFT_RELOAD_TIMER
+                        LD      HL,LEFT_TORPEDOES_REMAINING
                         LD      IY,TORPEDO_POOL_LEFT_BASE
                         CALL    UPDATE_PLAYER_TORPEDO_FIRE
 poll_right_torpedo:     LD      C,PORT_P1_HANDLE
-                        LD      DE,$C1CC
-                        LD      HL,$C1F0
+                        LD      DE,RIGHT_RELOAD_TIMER
+                        LD      HL,RIGHT_TORPEDOES_REMAINING
                         LD      IY,TORPEDO_POOL_RIGHT_BASE
                         CALL    UPDATE_PLAYER_TORPEDO_FIRE
                         POP     IY
@@ -1626,6 +1748,9 @@ poll_right_torpedo:     LD      C,PORT_P1_HANDLE
 
 ; C = handle/fire input port; DE = reload timer; HL = player fire state;
 ; IY = first torpedo object for the station.
+; A four-shot magazine allocates station slots in order 3, 2, 1, 0.  Since
+; station records are $32 bytes apart, left/right records remain interleaved in
+; the global eight-record scheduler pool.
 UPDATE_PLAYER_TORPEDO_FIRE:
                         LD      A,(HL)
                         OR      A
@@ -1718,6 +1843,9 @@ torpedo_sound_selected: LD      (HL),$38
                         RET
 
 INITIALIZE_TORPEDO_OBJECT:
+; Gameplay torpedoes start at Y=$BB00 with velocity -$0400 and acceleration
+; +$000C.  The decoded handle selects initial X and signed X velocity from the
+; station-specific 32-entry trajectory table.
                         CALL    CLEAR_OBJECT_RECORD
                         LD      (IY+OBJECT_TYPE),OBJECT_TYPE_TORPEDO
                         LD      (IY+OBJECT_Y_ACCEL_LO),$0C
@@ -1793,8 +1921,8 @@ sonar_update_done:      JP      (IY)
 ; $0AF4: Retire target-hit score overlays after the explosion advances
 ;-------------------------------------------------------------------------------
 ; PROCESS_SHIP_HIT sets bit 2 after drawing a score beside the struck target.
-; The overlay survives through two animation frames, or four for the Super Sub,
-; before this pass erases it and restores the owning station's lamps.
+; The overlay is removed on frame 3 for ordinary targets and frame 5 for the
+; Super Sub, then the owning station's saved lamp state is restored.
 ERASE_EXPIRED_HIT_SCORES:
                         PUSH    BC
                         PUSH    IY
@@ -1824,26 +1952,99 @@ hit_score_frame_limit_ready:
                         LD      HL,$136B               ; blank score overlay
                         CALL    DRAW_TEXT
                         BIT     3,(IY+OBJECT_FLAGS)
-                        LD      A,($C1F1)
+                        LD      A,(RIGHT_LAMP_STATE)
                         LD      C,PORT_RIGHT_LAMPS
                         JR      Z,restore_hit_lamps
-                        LD      A,($C1EE)
+                        LD      A,(LEFT_LAMP_STATE)
                         LD      C,PORT_LEFT_LAMPS
 restore_hit_lamps:      OUT     (C),A
                         POP     DE
                         POP     BC
 next_hit_score_record:  ADD     IY,DE
                         DJNZ    erase_hit_score_loop
-                        DB      $21,$F2,$C1,$11,$CE,$C1,$01,$1C,$6F,$CD,$C4 ; $0B4C
-                        DB      $0B,$21,$F4,$C1,$11,$CF,$C1,$01,$E0,$6E,$CD,$C4,$0B,$3E,$96,$32 ; $0B57  .!.......n...>.2
-                        DB      $01,$C2,$3E,$00,$32,$FF,$C1,$3E,$08,$32,$02,$C2,$21,$53,$1B,$3A ; $0B67  ..>.2..>.2..!S.:
-                        DB      $F4,$C1,$B7,$C4,$D7,$15,$3E,$78,$32,$FF,$C1,$3E,$04,$32,$02,$C2 ; $0B77  ......>x2..>.2..
-                        DB      $21,$53,$1B,$3A,$F2,$C1,$B7,$C4,$D7,$15,$3E,$AB,$32,$01,$C2,$3E ; $0B87  !S.:......>.2..>
-                        DB      $82,$32,$FF,$C1,$3A,$F3,$C1,$4F,$06,$00,$3A,$F2,$C1,$B7,$C4,$AE ; $0B97  .2..:..O..:.....
-                        DB      $0C,$3E,$08,$32,$02,$C2,$3E,$07,$32,$FF,$C1,$3A,$F5,$C1,$4F,$06 ; $0BA7  .>.2..>.2..:..O.
-                        DB      $00,$3A,$F4,$C1,$B7,$C4,$AE,$0C,$FD,$E1,$C1,$FD,$E9,$7E,$B7,$C8 ; $0BB7  .:...........~..
-                        DB      $1A,$B7,$C0,$36,$00,$60,$69,$11,$3C,$00,$AF,$0E,$20,$06,$14,$77 ; $0BC7  ...6.`i.<... ..w
-                        DB      $23,$10,$FC,$19,$0D,$20,$F6,$C9 ; $0BD7
+
+; The four-hit bonus is a timed overlay independent of the per-target score
+; overlay above.  Expired panels are cleared before any active left/right
+; BONUS label and BCD value are redrawn.
+UPDATE_BONUS_DISPLAYS:
+                        LD      HL,RIGHT_BONUS_DISPLAY_ACTIVE
+                        LD      DE,RIGHT_BONUS_DISPLAY_TIMER
+                        LD      BC,$6F1C               ; right panel VRAM origin
+                        CALL    CLEAR_EXPIRED_BONUS_PANEL
+                        LD      HL,LEFT_BONUS_DISPLAY_ACTIVE
+                        LD      DE,LEFT_BONUS_DISPLAY_TIMER
+                        LD      BC,$6EE0               ; left panel VRAM origin
+                        CALL    CLEAR_EXPIRED_BONUS_PANEL
+
+                        LD      A,$96
+                        LD      (TEXT_Y_POSITION),A
+                        LD      A,$00
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$08
+                        LD      (TEXT_COLOR),A
+                        LD      HL,TEXT_BONUS
+                        LD      A,(LEFT_BONUS_DISPLAY_ACTIVE)
+                        OR      A
+                        CALL    NZ,DRAW_TEXT_BLOCKING
+
+                        LD      A,$78
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$04
+                        LD      (TEXT_COLOR),A
+                        LD      HL,TEXT_BONUS
+                        LD      A,(RIGHT_BONUS_DISPLAY_ACTIVE)
+                        OR      A
+                        CALL    NZ,DRAW_TEXT_BLOCKING
+
+                        LD      A,$AB
+                        LD      (TEXT_Y_POSITION),A
+                        LD      A,$82
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,(RIGHT_BONUS_DISPLAY_VALUE_BCD)
+                        LD      C,A
+                        LD      B,$00
+                        LD      A,(RIGHT_BONUS_DISPLAY_ACTIVE)
+                        OR      A
+                        CALL    NZ,DRAW_BCD_VALUE
+
+                        LD      A,$08
+                        LD      (TEXT_COLOR),A
+                        LD      A,$07
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,(LEFT_BONUS_DISPLAY_VALUE_BCD)
+                        LD      C,A
+                        LD      B,$00
+                        LD      A,(LEFT_BONUS_DISPLAY_ACTIVE)
+                        OR      A
+                        CALL    NZ,DRAW_BCD_VALUE
+                        POP     IY
+                        POP     BC
+                        JP      (IY)
+
+; HL = active flag, DE = frame timer, BC = top-left VRAM address.  The panel is
+; 20 bytes wide by 32 rows.  The $003C stride plus the 20 cleared bytes advances
+; exactly one 80-byte video row.
+CLEAR_EXPIRED_BONUS_PANEL:
+                        LD      A,(HL)
+                        OR      A
+                        RET     Z
+                        LD      A,(DE)
+                        OR      A
+                        RET     NZ
+                        LD      (HL),$00
+                        LD      H,B
+                        LD      L,C
+                        LD      DE,$003C
+                        XOR     A
+                        LD      C,$20
+clear_bonus_panel_row:  LD      B,$14
+clear_bonus_panel_byte: LD      (HL),A
+                        INC     HL
+                        DJNZ    clear_bonus_panel_byte
+                        ADD     HL,DE
+                        DEC     C
+                        JR      NZ,clear_bonus_panel_row
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $0BDF: Seed the target and interleaved torpedo pools from ROM templates
@@ -1851,6 +2052,8 @@ next_hit_score_record:  ADD     IY,DE
 ; Records 0 and 2 of the four-record target pool receive distinct templates;
 ; records 1 and 3 remain available as their trailing lane partners.  The next
 ; two templates initialize the first left/right torpedo records at $C0FA/$C113.
+; This TERSE word runs in the no-player control path; gameplay fire events use
+; INITIALIZE_TORPEDO_OBJECT instead.
 INITIALIZE_OBJECT_POOLS:
                         LD      A,(TARGET_POOL_BASE+OBJECT_FLAGS)
                         BIT     7,A
@@ -1903,29 +2106,164 @@ PULSE_COIN_COUNTER:
                         LD      HL,$C206
                         INC     (HL)
 coin_counter_done:      JP      (IY)
-                        DB      $0A,$03,$5F,$0A,$03,$57,$0A,$03,$67 ; $0C6E
-                        DB      $2E,$00,$22,$00,$C2,$0A,$03,$67,$22,$FE,$C1,$3E,$0C,$32,$02,$C2 ; $0C77  .."....g"..>.2..
-                        DB      $EB,$0A,$03,$B7,$C5,$20,$05,$CD,$E4,$15,$18,$03,$CD,$D7,$15,$C1 ; $0C87  ..... ..........
-                        DB      $FD,$E9,$C5,$CD,$A0,$0C,$C1,$FD,$E9,$21,$09,$C2,$3E,$76,$32,$FF ; $0C97  .........!..>v2.
-                        DB      $C1,$3E,$02,$16,$0C,$18,$08,$C5,$18,$10,$32,$FF,$C1,$3E,$BE,$32 ; $0CA7  .>........2..>.2
-                        DB      $01,$C2,$7A,$32,$02,$C2,$C5,$46,$2B,$4E,$21,$00,$00,$E5,$21,$30 ; $0CB7  ..z2...F+N!...!0
-                        DB      $30,$E5,$79,$CD,$F0,$0C,$78,$CD,$F0,$0C,$21,$00,$00,$39,$E5,$01 ; $0CC7  0.y...x...!..9..
-                        DB      $40,$04,$3E,$30,$BE,$20,$04,$71,$23,$10,$F9,$E1,$CD,$E4,$15,$33 ; $0CD7   .>0. .q#......3
-                        DB      $33,$33,$33,$33,$33,$33,$33,$C1,$C9,$57,$1F,$1F,$1F,$1F,$E6,$0F ; $0CE7  3333333..W......
-                        DB      $F6,$30,$6F,$7A,$E6,$0F,$F6,$30,$67,$E3,$E9 ; $0CF7-$0D01
+
+;-------------------------------------------------------------------------------
+; $0C6E: TERSE text word with five inline operands
+;-------------------------------------------------------------------------------
+; Inline layout: text pointer, Y high byte, X high byte, blocking flag.  A zero
+; flag uses the ordinary renderer; nonzero brackets it with TEXT_RENDER_LOCK.
+TERSE_DRAW_TEXT_INLINE:
+                        LD      A,(BC)
+                        INC     BC
+                        LD      E,A
+                        LD      A,(BC)
+                        INC     BC
+                        LD      D,A
+                        LD      A,(BC)
+                        INC     BC
+                        LD      H,A
+                        LD      L,$00
+                        LD      (TEXT_Y_POSITION_LO),HL
+                        LD      A,(BC)
+                        INC     BC
+                        LD      H,A
+                        LD      (TEXT_X_POSITION_LO),HL
+                        LD      A,$0C
+                        LD      (TEXT_COLOR),A
+                        EX      DE,HL
+                        LD      A,(BC)
+                        INC     BC
+                        OR      A
+                        PUSH    BC
+                        JR      NZ,draw_inline_text_blocking
+                        CALL    DRAW_TEXT
+                        JR      inline_text_done
+draw_inline_text_blocking:
+                        CALL    DRAW_TEXT_BLOCKING
+inline_text_done:       POP     BC
+                        JP      (IY)
+
+; TERSE wrapper used by the game-state thread to redraw the high score.
+DRAW_HIGH_SCORE_WORD:   PUSH    BC
+                        CALL    DRAW_HIGH_SCORE
+                        POP     BC
+                        JP      (IY)
+
+DRAW_HIGH_SCORE:        LD      HL,$C209
+                        LD      A,$76
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$02
+                        LD      D,$0C
+                        JR      draw_score_at_fixed_position
+
+; BC is a two-byte packed-BCD value.  Position and color are already set.
+DRAW_BCD_VALUE:         PUSH    BC
+                        JR      format_and_draw_score
+
+; HL addresses the high BCD byte.  A is X and D is color; scores use Y=$BE.
+DRAW_SCORE_AT_STATION:  LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$BE
+draw_score_at_fixed_position:
+                        LD      (TEXT_Y_POSITION),A
+                        LD      A,D
+                        LD      (TEXT_COLOR),A
+                        PUSH    BC
+                        LD      B,(HL)
+                        DEC     HL
+                        LD      C,(HL)
+
+; Build four ASCII digits plus a zero terminator on the native stack.  Leading
+; zeroes become spaces before DRAW_TEXT consumes the temporary string.
+format_and_draw_score:  LD      HL,$0000
+                        PUSH    HL
+                        LD      HL,$3030
+                        PUSH    HL
+                        LD      A,C
+                        CALL    PUSH_BCD_DIGITS
+                        LD      A,B
+                        CALL    PUSH_BCD_DIGITS
+                        LD      HL,$0000
+                        ADD     HL,SP
+                        PUSH    HL
+                        LD      BC,$0440               ; four digits, space $40
+                        LD      A,$30
+blank_leading_zero:     CP      (HL)
+                        JR      NZ,draw_formatted_score
+                        LD      (HL),C
+                        INC     HL
+                        DJNZ    blank_leading_zero
+draw_formatted_score:   POP     HL
+                        CALL    DRAW_TEXT
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        INC     SP
+                        POP     BC
+                        RET
+
+; Replace the CALL return word on the stack with two ASCII digits, then jump
+; through the displaced return address.  The high nibble is emitted first.
+PUSH_BCD_DIGITS:        LD      D,A
+                        RRA
+                        RRA
+                        RRA
+                        RRA
+                        AND     $0F
+                        OR      $30
+                        LD      L,A
+                        LD      A,D
+                        AND     $0F
+                        OR      $30
+                        LD      H,A
+                        EX      (SP),HL
+                        JP      (HL)
 
 ;-------------------------------------------------------------------------------
 ; $0D02: Suspend object service and present the Super Sub warning
 ;-------------------------------------------------------------------------------
 ; Displays TEXT_SUPER and TEXT_SUB, waits $40 interrupts, clears the warning
-; rectangle, then releases SOUND_FRAME_DIVIDER so object service resumes.
+; rectangle, then releases SOUND_FRAME_DIVIDER so object service resumes.  The
+; lightweight raster interrupts continue while the frame object workload is
+; held.
 SHOW_SUPER_SUB_ANNOUNCEMENT:
-                        DB      $3E,$01,$32,$CA,$C1                         ; $0D02
-                        DB      $3E,$3C,$32,$FF,$C1,$3E,$4B,$32,$01,$C2,$3E,$0C,$32,$02,$C2,$21 ; $0D07  ><2..>K2..>.2..!
-                        DB      $7B,$13,$CD,$D7,$15,$3E,$44,$32,$FF,$C1,$3E,$69,$32,$01,$C2,$21 ; $0D17  {....>D2..>i2..!
-                        DB      $81,$13,$CD,$D7,$15,$06,$40,$76,$10,$FD,$21,$8E,$57,$11,$3C,$00 ; $0D27  ...... v..!.W.<.
-                        DB      $AF,$0E,$32,$06,$14,$77,$23,$10,$FC,$19,$0D,$20,$F6,$32,$CA,$C1 ; $0D37  ..2..w#.... .2..
-                        DB      $C9                                                     ; $0D47  RET
+                        LD      A,$01
+                        LD      (SOUND_FRAME_DIVIDER),A
+                        LD      A,$3C
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$4B
+                        LD      (TEXT_Y_POSITION),A
+                        LD      A,$0C
+                        LD      (TEXT_COLOR),A
+                        LD      HL,TEXT_SUPER
+                        CALL    DRAW_TEXT_BLOCKING
+                        LD      A,$44
+                        LD      (TEXT_X_POSITION_HI),A
+                        LD      A,$69
+                        LD      (TEXT_Y_POSITION),A
+                        LD      HL,TEXT_SUB
+                        CALL    DRAW_TEXT_BLOCKING
+                        LD      B,$40
+super_sub_message_hold: HALT
+                        DJNZ    super_sub_message_hold
+
+; Clear the 20-byte by 50-row announcement rectangle.  Row stride is $50.
+                        LD      HL,$578E
+                        LD      DE,$003C
+                        XOR     A
+                        LD      C,$32
+clear_super_sub_row:    LD      B,$14
+clear_super_sub_byte:   LD      (HL),A
+                        INC     HL
+                        DJNZ    clear_super_sub_byte
+                        ADD     HL,DE
+                        DEC     C
+                        JR      NZ,clear_super_sub_row
+                        LD      (SOUND_FRAME_DIVIDER),A
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $0D48: Left-station torpedo launch X/velocity pairs
@@ -2255,9 +2593,10 @@ pack_port41_timer:      CP      (HL)
 dive_trigger_ready:     XOR     (HL)
                         OR      C
                         OUT     (PORT_SOUND_CONTROL),A
-; Round-robin workload per service pass: two of four targets, four of eight
-; torpedoes, and one of six mines.  Persistent cursors cover each complete pool
-; across subsequent interrupts without scanning inactive records linearly.
+; Round-robin workload per 60 Hz frame service: two of four targets, four of
+; eight torpedoes, and one of six mines.  Each target and torpedo is therefore
+; visited at 30 Hz; each mine is visited at 10 Hz.  Persistent cursors cover
+; each complete pool without scanning inactive records linearly.
                         CALL    SERVICE_TARGET_POOL
                         CALL    SERVICE_TARGET_POOL
                         CALL    SERVICE_TORPEDO_POOL
@@ -2360,8 +2699,9 @@ UPDATE_TARGET_OBJECT:   BIT     6,(IX+OBJECT_FLAGS)
                         BIT     4,(IX+OBJECT_FLAGS)
                         JR      NZ,ERASE_AND_DEACTIVATE_OBJECT
 
-; The Super Sub advances through its two dive frames on a 42-tick cadence.
-; Other target types retain the animation frame selected by their state path.
+; The Super Sub advances through its two dive frames every 42 target visits.
+; At the 30 Hz target cadence this is 84 video frames, about 1.4 seconds, per
+; step.  Frame 2 then persists until boundary retirement or collision.
                         LD      A,(IX+OBJECT_TYPE)
                         CP      OBJECT_TYPE_SUPER_SUB
                         JR      NZ,target_bitmap_ready
@@ -2379,20 +2719,23 @@ target_bitmap_ready:    CALL    SELECT_OBJECT_BITMAP
                         RET
 
 ERASE_AND_DEACTIVATE_OBJECT:
+; Boundary retirement erases the last bitmap and clears ACTIVE.  Target and
+; torpedo allocation tests ACTIVE only, so no timer delays subsequent reuse.
                         CALL    ERASE_OBJECT_BITMAP
                         RES     7,(IX+OBJECT_FLAGS)
                         RET
 
-; Clear the two per-station result bytes selected by torpedo-record parity.
-; The even interleaved torpedo records belong to the left station.
-CLEAR_TORPEDO_RESULT_STATE:
+; Clear the consecutive-ship-hit count/value selected by torpedo-record parity.
+; The even interleaved torpedo records belong to the left station.  This runs
+; when a torpedo misses at a boundary and when it strikes a mine.
+CLEAR_PLAYER_HIT_STREAK:
                         PUSH    IX
                         POP     HL
                         BIT     0,L
-                        LD      HL,$C1EA
-                        JR      NZ,torpedo_result_state_selected
-                        LD      HL,$C1E5
-torpedo_result_state_selected:
+                        LD      HL,RIGHT_HIT_STREAK_COUNT
+                        JR      NZ,hit_streak_selected
+                        LD      HL,LEFT_HIT_STREAK_COUNT
+hit_streak_selected:
                         LD      (HL),$00
                         INC     HL
                         LD      (HL),$00
@@ -2409,7 +2752,7 @@ UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
                         CALL    INTEGRATE_OBJECT_MOTION
                         BIT     4,(IX+OBJECT_FLAGS)
                         PUSH    AF
-                        CALL    NZ,CLEAR_TORPEDO_RESULT_STATE
+                        CALL    NZ,CLEAR_PLAYER_HIT_STREAK
                         POP     AF
                         PUSH    AF
                         CALL    Z,PREPARE_OBJECT_RENDER
@@ -2421,7 +2764,7 @@ UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
                         JP      Z,DRAW_NEW_TORPEDO_FRAME
 
 ; Probe the seven Magic-RAM bytes covered by the torpedo's old bitmap.  Only
-; pixel values with either high color bit set can represent a target overlap.
+; pixel values with either high color bit set can represent an object overlap.
                         LD      DE,$3F60
                         ADD     HL,DE
                         LD      A,(HL)
@@ -2507,9 +2850,10 @@ collision_side_selected:
                         LD      B,(IX+OBJECT_COLOR)
                         RES     7,(IX+OBJECT_FLAGS)
 
-; C > 2 is a mine collision: mask $24 selects bits 2/5 and produces an
-; eight-frame mine-hit pulse.  C <= 2 is a ship collision: mask $12 selects
-; bits 1/4 and produces a $40-frame ship-hit pulse.
+; C > 2 is a mine collision: mask $24 selects bits 2/5, clears the firing
+; station's consecutive-hit streak, and produces an eight-frame mine-hit pulse.
+; C <= 2 is a ship collision: mask $12 selects bits 1/4, preserves the streak,
+; copies torpedo color to the target, and produces a $40-frame ship-hit pulse.
 TRIGGER_SHIP_OR_MINE_HIT_SOUND:
                         LD      A,$02
                         CP      C
@@ -2517,7 +2861,7 @@ select_mine_hit_sound:
                         LD      A,$24
                         LD      C,$08
                         PUSH    AF
-                        CALL    C,CLEAR_TORPEDO_RESULT_STATE
+                        CALL    C,CLEAR_PLAYER_HIT_STREAK
                         POP     AF
                         JR      C,hit_sound_class_selected
 select_ship_hit_sound:
@@ -2562,6 +2906,9 @@ torpedo_frame_selected:
 ;-------------------------------------------------------------------------------
 ; $15AB: Update one mine from the six-record mine pool
 ;-------------------------------------------------------------------------------
+; Live mines move right by half a pixel per 10 Hz visit and wrap at X=$A0.
+; Hit mines force TIMER to zero, so their single hit bitmap lasts one mine visit
+; before the following visit reaches the zero animation terminator.
 UPDATE_MINE_OBJECT:     BIT     6,(IX+OBJECT_FLAGS)
                         JR      Z,move_mine_object
                         LD      (IX+OBJECT_TIMER),$00
@@ -2576,7 +2923,15 @@ move_mine_object:       CALL    INTEGRATE_OBJECT_MOTION
 draw_mine_object:       CALL    SELECT_OBJECT_BITMAP
                         CALL    DRAW_OBJECT_BITMAP
                         RET
-                        DB      $3E,$01,$32,$DD,$C1,$CD,$E4,$15,$AF,$32,$DD,$C1,$C9 ; $15D7
+
+; Set the renderer lock around text that must not be interleaved with the
+; interrupt-driven display path.
+DRAW_TEXT_BLOCKING:     LD      A,$01
+                        LD      (TEXT_RENDER_LOCK),A
+                        CALL    DRAW_TEXT
+                        XOR     A
+                        LD      (TEXT_RENDER_LOCK),A
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $15E4: Draw a zero-terminated text string
@@ -2815,8 +3170,10 @@ raster_motion_reverse:  LD      (HL),RASTER_MOTION_PERIOD
 ;-------------------------------------------------------------------------------
 ; $17DA: Advance a collided target or mine through its hit-animation frames
 ;-------------------------------------------------------------------------------
-; A hit Super Sub skips any remaining timed dive frames and enters its first
-; explosion frame at index 3.  Other objects simply advance one list entry.
+; Targets retain TIMER=$06 between animation steps, so they advance every six
+; 30 Hz visits (12 video frames).  UPDATE_MINE_OBJECT resets TIMER and advances
+; its two-entry sequence on consecutive 10 Hz mine visits.  A hit Super Sub
+; skips any remaining dive frames and enters its first explosion at index 3.
 ADVANCE_OBJECT_HIT_ANIMATION:
                         CALL    DECAY_OBJECT_TIMER
                         OR      A
@@ -3195,9 +3552,10 @@ interrupt_schedule_b_54:
 ;-------------------------------------------------------------------------------
 ; $1A53: Per-type bitmap and hit-animation pointer lists
 ;-------------------------------------------------------------------------------
-; Frame zero is the live object.  Collision handling increments the frame every
-; six object visits and deactivates the record when SELECT_OBJECT_BITMAP reaches
-; the zero terminator.  Shared tails are intentional ROM-space reuse.
+; Frame zero is the live object.  Target collision handling increments the
+; frame every six target visits and deactivates the record at the zero
+; terminator.  Mines intentionally advance on consecutive mine visits.  Shared
+; tails are ROM-space reuse.
 OBJECT_BITMAP_POINTER_LISTS:
 WARSHIP_A_BITMAP_SEQUENCE:
                         DW      BITMAP_WARSHIP_A
