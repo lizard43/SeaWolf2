@@ -28,6 +28,9 @@ not describe that structure correctly.
   reconstructed as native Z80.
 - Cabinet handle/start/coin inputs, the complete S1 operator-switch matrix,
   service-mode selection, and left/right station ownership are resolved.
+- The six-bit Gray-code handle conversion, MAME's 64-position remap, the
+  32-entry aim clamp, both station trajectories, fixed-point flight equations,
+  early X exits, perspective changes, and collision-lane timing are mapped.
 - A MAME 0.289 input-port error that prevents French prompt selection is
   identified; the supplied driver patch corrects the French contact address.
 - The 25-byte object-record ABI, all three scheduler pools, object selection,
@@ -91,10 +94,63 @@ The ROM uses physical station names. MAME's historical `P1HANDLE` and
 | `$42` | `lamplatch1` | Left station torpedo, ready/reload, and hit lamps |
 | `$43` | `lamplatch0` | Right station torpedo, ready/reload, and hit lamps |
 
-`DECODE_HANDLE_POSITION` converts the six-bit reflected Gray code to a binary
-position. The normal fire path uses the decoded position to select a torpedo
-trajectory. The interactive service test displays both decoded positions as
-six binary digits; it does not display the fire bits.
+### Handle encoder and aim index
+
+Both station handles present six-bit reflected Gray code in port bits 0-5.
+`DECODE_HANDLE_POSITION` is a complete Gray-to-binary decoder. For raw value
+`G` and decoded position `N`:
+
+`N[5] = G[5]`; `N[k] = N[k+1] XOR G[k]` for `k = 4..0`.
+
+The routine applies that recurrence in place with masks `$20`, `$10`, `$08`,
+`$04`, `$02`, and `$01`. Bits 6-7 are removed before conversion. The service
+test displays the resulting six binary digits and does not display FIRE.
+
+MAME 0.289's 64-entry `controller_table` supplies `G = N XOR (N >> 1)` in
+reverse positional order. Therefore MAME positional index `P` decodes exactly
+as `N = 63 - P`.
+
+The fire path maps decoded position to a 32-entry aim index:
+
+`index = clamp(N - $12, $00, $1F)`.
+
+Decoded positions `$00-$12` select index `$00`; `$13-$30` select `$01-$1E`;
+`$31-$3F` select `$1F`. This is the complete input map:
+
+| Decoded | Raw Gray | MAME position | Aim index | Decoded | Raw Gray | MAME position | Aim index |
+| ---: | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| `$00` | `$00` | 63 | `$00` | `$20` | `$30` | 31 | `$0E` |
+| `$01` | `$01` | 62 | `$00` | `$21` | `$31` | 30 | `$0F` |
+| `$02` | `$03` | 61 | `$00` | `$22` | `$33` | 29 | `$10` |
+| `$03` | `$02` | 60 | `$00` | `$23` | `$32` | 28 | `$11` |
+| `$04` | `$06` | 59 | `$00` | `$24` | `$36` | 27 | `$12` |
+| `$05` | `$07` | 58 | `$00` | `$25` | `$37` | 26 | `$13` |
+| `$06` | `$05` | 57 | `$00` | `$26` | `$35` | 25 | `$14` |
+| `$07` | `$04` | 56 | `$00` | `$27` | `$34` | 24 | `$15` |
+| `$08` | `$0C` | 55 | `$00` | `$28` | `$3C` | 23 | `$16` |
+| `$09` | `$0D` | 54 | `$00` | `$29` | `$3D` | 22 | `$17` |
+| `$0A` | `$0F` | 53 | `$00` | `$2A` | `$3F` | 21 | `$18` |
+| `$0B` | `$0E` | 52 | `$00` | `$2B` | `$3E` | 20 | `$19` |
+| `$0C` | `$0A` | 51 | `$00` | `$2C` | `$3A` | 19 | `$1A` |
+| `$0D` | `$0B` | 50 | `$00` | `$2D` | `$3B` | 18 | `$1B` |
+| `$0E` | `$09` | 49 | `$00` | `$2E` | `$39` | 17 | `$1C` |
+| `$0F` | `$08` | 48 | `$00` | `$2F` | `$38` | 16 | `$1D` |
+| `$10` | `$18` | 47 | `$00` | `$30` | `$28` | 15 | `$1E` |
+| `$11` | `$19` | 46 | `$00` | `$31` | `$29` | 14 | `$1F` |
+| `$12` | `$1B` | 45 | `$00` | `$32` | `$2B` | 13 | `$1F` |
+| `$13` | `$1A` | 44 | `$01` | `$33` | `$2A` | 12 | `$1F` |
+| `$14` | `$1E` | 43 | `$02` | `$34` | `$2E` | 11 | `$1F` |
+| `$15` | `$1F` | 42 | `$03` | `$35` | `$2F` | 10 | `$1F` |
+| `$16` | `$1D` | 41 | `$04` | `$36` | `$2D` | 9 | `$1F` |
+| `$17` | `$1C` | 40 | `$05` | `$37` | `$2C` | 8 | `$1F` |
+| `$18` | `$14` | 39 | `$06` | `$38` | `$24` | 7 | `$1F` |
+| `$19` | `$15` | 38 | `$07` | `$39` | `$25` | 6 | `$1F` |
+| `$1A` | `$17` | 37 | `$08` | `$3A` | `$27` | 5 | `$1F` |
+| `$1B` | `$16` | 36 | `$09` | `$3B` | `$26` | 4 | `$1F` |
+| `$1C` | `$12` | 35 | `$0A` | `$3C` | `$22` | 3 | `$1F` |
+| `$1D` | `$13` | 34 | `$0B` | `$3D` | `$23` | 2 | `$1F` |
+| `$1E` | `$11` | 33 | `$0C` | `$3E` | `$21` | 1 | `$1F` |
+| `$1F` | `$10` | 32 | `$0D` | `$3F` | `$20` | 0 | `$1F` |
 
 ### Operator switch bank S1
 
@@ -387,12 +443,98 @@ X=`$07`/`$82`; the center bitmap is drawn at X=`$4D`; all start at Y=`$B8`.
 
 | Address | Label | Entries | Entry format | Consumer |
 | ---: | --- | ---: | --- | --- |
-| `$0D48-$0D87` | `TORPEDO_TRAJECTORY_LEFT_TABLE` | 32 | initial X, positive signed-8.8 dX low byte | `FIRE_TORPEDO` |
-| `$0D88-$0DC7` | `TORPEDO_TRAJECTORY_RIGHT_TABLE` | 32 | initial X, sign-extended signed-8.8 dX low byte | `FIRE_TORPEDO` |
+| `$0D48-$0D87` | `TORPEDO_TRAJECTORY_LEFT_TABLE` | 32 | initial X high byte, signed-8.8 dX low byte | `SELECT_TORPEDO_AIM_TRAJECTORY` |
+| `$0D88-$0DC7` | `TORPEDO_TRAJECTORY_RIGHT_TABLE` | 32 | initial X high byte, signed-8.8 dX low byte | `SELECT_TORPEDO_AIM_TRAJECTORY` |
 
-The decoded handle position is reduced by `$12` and clamped to index `$00-$1F`.
-Each two-byte entry now has a label and a comment showing handle value, initial
-X, and the complete sign-extended 8.8 velocity.
+The cleared object record supplies the zero X fraction and zero positive
+velocity high byte. A table velocity with bit 7 set is sign-extended with
+`$FF`. The complete trajectory entry map is:
+
+| Index | Decoded input | Left X0 | Left dX | Right X0 | Right dX |
+| ---: | ---: | ---: | ---: | ---: | ---: |
+| `$00` | `$00-$12` | `$9000` | `+$0070` | `$9B00` | `$0000` |
+| `$01` | `$13` | `$8A00` | `+$006D` | `$9600` | `$FFFD` |
+| `$02` | `$14` | `$8500` | `+$006A` | `$9200` | `$FFFA` |
+| `$03` | `$15` | `$7F00` | `+$0067` | `$8E00` | `$FFF7` |
+| `$04` | `$16` | `$7A00` | `+$0064` | `$8A00` | `$FFF4` |
+| `$05` | `$17` | `$7500` | `+$0061` | `$8600` | `$FFF1` |
+| `$06` | `$18` | `$6F00` | `+$005E` | `$8100` | `$FFEE` |
+| `$07` | `$19` | `$6A00` | `+$005B` | `$7D00` | `$FFEB` |
+| `$08` | `$1A` | `$6500` | `+$0058` | `$7900` | `$FFE8` |
+| `$09` | `$1B` | `$6100` | `+$0055` | `$7500` | `$FFE5` |
+| `$0A` | `$1C` | `$5C00` | `+$0052` | `$7000` | `$FFE2` |
+| `$0B` | `$1D` | `$5700` | `+$004F` | `$6C00` | `$FFDF` |
+| `$0C` | `$1E` | `$5200` | `+$004C` | `$6800` | `$FFDC` |
+| `$0D` | `$1F` | `$4E00` | `+$0049` | `$6300` | `$FFD9` |
+| `$0E` | `$20` | `$4900` | `+$0046` | `$5F00` | `$FFD6` |
+| `$0F` | `$21` | `$4400` | `+$0043` | `$5A00` | `$FFD3` |
+| `$10` | `$22` | `$4000` | `+$0040` | `$5600` | `$FFD0` |
+| `$11` | `$23` | `$3B00` | `+$003D` | `$5100` | `$FFCD` |
+| `$12` | `$24` | `$3700` | `+$003A` | `$4D00` | `$FFCD` |
+| `$13` | `$25` | `$3300` | `+$0037` | `$4800` | `$FFCA` |
+| `$14` | `$26` | `$2E00` | `+$0034` | `$4300` | `$FFC7` |
+| `$15` | `$27` | `$2A00` | `+$0031` | `$3E00` | `$FFC4` |
+| `$16` | `$28` | `$2600` | `+$002E` | `$3A00` | `$FFC1` |
+| `$17` | `$29` | `$2100` | `+$002B` | `$3500` | `$FFBE` |
+| `$18` | `$2A` | `$1D00` | `+$0028` | `$3000` | `$FFBB` |
+| `$19` | `$2B` | `$1900` | `+$0025` | `$2B00` | `$FFB8` |
+| `$1A` | `$2C` | `$1500` | `+$0022` | `$2500` | `$FFB5` |
+| `$1B` | `$2D` | `$1000` | `+$001F` | `$2000` | `$FFB2` |
+| `$1C` | `$2E` | `$0D00` | `+$001C` | `$1B00` | `$FFAF` |
+| `$1D` | `$2F` | `$0800` | `+$0019` | `$1600` | `$FFAC` |
+| `$1E` | `$30` | `$0400` | `+$0016` | `$1000` | `$FFA9` |
+| `$1F` | `$31-$3F` | `$0000` | `+$0013` | `$0A00` | `$FFA6` |
+
+All coordinates and velocities are signed 8.8 values. Torpedoes are serviced
+at 30 Hz. For update visit `n`, before any boundary clamp:
+
+`vY(n) = -$0400 + n*$000C`
+
+`Y(n) = $BB00 - n*$0400 + $000C*n*(n+1)/2`
+
+`X(n) = X0 + n*dX`
+
+Motion and boundary checks run before collision. The common Y path produces
+this fixed perspective and lane schedule:
+
+| Visits | Y endpoints | Perspective | Lane | Candidate records |
+| ---: | ---: | --- | ---: | --- |
+| 1-15 | `$B70C-$84A0` | Near | 5 | Lower mines `$C0C8/$C0E1` |
+| 16-18 | `$8160-$7B04` | Near | 4 | Middle mines `$C096/$C0AF` |
+| 19-25 | `$77E8-$663C` | Middle | 4 | Middle mines `$C096/$C0AF` |
+| 26-35 | `$6374-$4C88` | Middle | 3 | Upper mines `$C064/$C07D` |
+| 36-37 | `$4A38-$47F4` | Middle | 2 | Lower targets `$C032/$C04B` |
+| 38-47 | `$45BC-$33E0` | Far | 2 | Lower targets `$C032/$C04B` |
+| 48-58 | `$3220-$2334` | Far | 1 | Upper targets `$C000/$C019` |
+| 59 | raw `$21F8`, clamped to `$2300` | Retired | none | No collision test |
+
+The lane selects two possible records; the display-RAM probe, active/hit flags,
+and horizontal span test still determine whether either record is hit. Handle
+position does not select a lane. It changes X only, except when an extreme
+trajectory crosses an X boundary before reaching the next lane:
+
+| Station/index | Boundary visit | Crossing X | Visits in deepest lane | Deepest tested lane |
+| --- | ---: | ---: | ---: | --- |
+| Left `$00` | 28 | `$9C40` | 26-27 | 3, upper mines |
+| Left `$01` | 43 | `$9C4F` | 36-42 | 2, lower targets |
+| Left `$02` | 56 | `$9C30` | 48-55 | 1, upper targets |
+| Right `$1E` | 48 | `-$0050` | 36-47 | 2, lower targets |
+| Right `$1F` | 29 | `-$0032` | 26-28 | 3, upper mines |
+
+Every other left index (`$03-$1F`) and right index (`$00-$1D`) reaches lane 1
+through visit 58 and retires at the Y minimum on visit 59.
+
+The station tables are opposed but not exact numerical mirrors. Left dX is
+always positive (`+$0013` through `+$0070`); right dX is zero or negative
+(`$0000` through `-$005A`). For reverse-index pairs:
+
+- `left[i].X0 + right[$1F-i].X0` is `$9A00` or `$9B00`, placing the launch
+  midpoint at `$4D00` or `$4D80`.
+- `left[i].dX + right[$1F-i].dX` is `+$0016` for `i=$00-$0D` and `+$0013`
+  for `i=$0E-$1F`.
+
+That fixed positive residual proves the velocity tables are calibrated
+near-symmetrically, not generated by exact sign reversal.
 
 ## Remaining raw data
 

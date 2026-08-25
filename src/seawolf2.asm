@@ -92,6 +92,7 @@ PORT_RIGHT_LAMPS        EQU     $43
 ; fire input.  Torpedo-record address parity becomes target flag bit 3 on a
 ; hit; scoring, hit lamps, bonus state, and collision sound consume that bit.
 RAW_HANDLE_POSITION_MASK        EQU $3F
+RAW_HANDLE_GRAY_MSB             EQU $20
 DECODED_HANDLE_POSITION_MASK    EQU $7F
 HANDLE_FIRE_MASK                EQU $80
 STATION_PORT_PARITY_BIT         EQU $00 ; port $10 left, port $11 right
@@ -441,9 +442,11 @@ TORPEDO_POOL_RIGHT_BASE     EQU $C113
 TORPEDO_POOL_LAST           EQU $C1A9
 TORPEDO_POOL_COUNT          EQU $08
 TORPEDO_STATION_STRIDE      EQU $32
-TORPEDO_AIM_HANDLE_BASE     EQU $12
+TORPEDO_AIM_HANDLE_MIN      EQU $12
+TORPEDO_AIM_HANDLE_MAX      EQU $31
 TORPEDO_TRAJECTORY_ENTRY_COUNT EQU $20
 TORPEDO_TRAJECTORY_TABLE_BYTES EQU $40
+TORPEDO_TRAJECTORY_OFFSET_MASK EQU $3E
 TORPEDO_TRAJECTORY_LAST_OFFSET EQU $3E
 
 TORPEDO_FRAME_NEAR_MIN_Y    EQU $78
@@ -2245,7 +2248,13 @@ torpedo_record_selected:
                         CALL    INITIALIZE_TORPEDO_OBJECT
                         IN      A,(C)
                         CALL    DECODE_HANDLE_POSITION
-                        SUB     TORPEDO_AIM_HANDLE_BASE
+; Convert decoded handle position N to a byte offset into a 32-entry table:
+;   index = clamp(N - $12, $00, $1F)
+;   offset = index * 2
+; Decoded $00-$12 selects entry 0, $13-$30 selects entries 1-$1E directly,
+; and $31-$3F selects entry $1F.
+SELECT_TORPEDO_AIM_TRAJECTORY:
+                        SUB     TORPEDO_AIM_HANDLE_MIN
                         JR      NC,torpedo_aim_nonnegative
                         LD      A,$00
 torpedo_aim_nonnegative:
@@ -2253,7 +2262,7 @@ torpedo_aim_nonnegative:
                         CP      TORPEDO_TRAJECTORY_TABLE_BYTES
                         JR      C,torpedo_aim_in_range
                         LD      A,TORPEDO_TRAJECTORY_LAST_OFFSET
-torpedo_aim_in_range:   AND     TORPEDO_TRAJECTORY_LAST_OFFSET
+torpedo_aim_in_range:   AND     TORPEDO_TRAJECTORY_OFFSET_MASK
                         LD      HL,TORPEDO_TRAJECTORY_LEFT_TABLE
                         BIT     STATION_PORT_PARITY_BIT,C
                         JR      Z,torpedo_trajectory_table
@@ -2304,13 +2313,17 @@ INITIALIZE_TORPEDO_OBJECT:
 torpedo_color_selected: LD      (IY+OBJECT_COLOR),A
                         RET
 
+; Convert the low six input bits from reflected Gray code G to binary N.
+; Starting at the MSB, each decoded bit is the raw Gray bit XOR the decoded
+; bit immediately above it: N[5]=G[5], N[k]=N[k+1] XOR G[k].  C retains G;
+; B is rewritten in place as N.  The fire and language contacts are masked.
 DECODE_HANDLE_POSITION:
                         PUSH    BC
                         PUSH    DE
                         AND     RAW_HANDLE_POSITION_MASK
                         LD      C,A
                         LD      B,A
-                        LD      D,$20
+                        LD      D,RAW_HANDLE_GRAY_MSB
 decode_handle_bit:      LD      A,C
                         AND     D
                         LD      E,A
@@ -2743,142 +2756,149 @@ clear_super_sub_byte:   LD      (HL),A
 ;-------------------------------------------------------------------------------
 ; $0D48-$0DC7: Station torpedo launch X/velocity tables
 ;-------------------------------------------------------------------------------
-; FIRE_TORPEDO decodes the six-bit handle, subtracts $12, clamps the result to
-; 0-$1F, and doubles it to select one two-byte entry.  Byte 0 is the initial
-; X coordinate.  Byte 1 is sign-extended into the low byte of signed 8.8 X
-; velocity.  Handle values below $12 use entry 0; values above $31 use entry 31.
+; UPDATE_PLAYER_TORPEDO_FIRE decodes the six-bit handle, subtracts $12, clamps
+; the result to 0-$1F, and doubles it to select one two-byte entry.  Byte 0 is
+; the initial 8.8 X high byte; the fractional low byte starts at zero.  Byte 1
+; is sign-extended into signed 8.8 X velocity.  Decoded values $00-$12 use
+; entry 0; values $31-$3F use entry $1F.
+;
+; The stations are directionally opposed: every left dX is positive
+; ($0013-$0070), while right dX is zero or negative ($0000 to -$005A).
+; Reverse-index launch pairs are nearly mirrored: left[i].X + right[$1F-i].X
+; is $9A or $9B.  They are not exact velocity mirrors; the corresponding dX
+; sums are +$0016 for i=$00-$0D and +$0013 for i=$0E-$1F.
 
 TORPEDO_TRAJECTORY_LEFT_TABLE:
 TORPEDO_TRAJECTORY_LEFT_00:
-                        DB      $90,$70                 ; index $00, handle $12, X=$90, dX=$0070
+                        DB      $90,$70                 ; index $00, decoded $00-$12, X=$90, dX=$0070
 TORPEDO_TRAJECTORY_LEFT_01:
-                        DB      $8A,$6D                 ; index $01, handle $13, X=$8A, dX=$006D
+                        DB      $8A,$6D                 ; index $01, decoded $13, X=$8A, dX=$006D
 TORPEDO_TRAJECTORY_LEFT_02:
-                        DB      $85,$6A                 ; index $02, handle $14, X=$85, dX=$006A
+                        DB      $85,$6A                 ; index $02, decoded $14, X=$85, dX=$006A
 TORPEDO_TRAJECTORY_LEFT_03:
-                        DB      $7F,$67                 ; index $03, handle $15, X=$7F, dX=$0067
+                        DB      $7F,$67                 ; index $03, decoded $15, X=$7F, dX=$0067
 TORPEDO_TRAJECTORY_LEFT_04:
-                        DB      $7A,$64                 ; index $04, handle $16, X=$7A, dX=$0064
+                        DB      $7A,$64                 ; index $04, decoded $16, X=$7A, dX=$0064
 TORPEDO_TRAJECTORY_LEFT_05:
-                        DB      $75,$61                 ; index $05, handle $17, X=$75, dX=$0061
+                        DB      $75,$61                 ; index $05, decoded $17, X=$75, dX=$0061
 TORPEDO_TRAJECTORY_LEFT_06:
-                        DB      $6F,$5E                 ; index $06, handle $18, X=$6F, dX=$005E
+                        DB      $6F,$5E                 ; index $06, decoded $18, X=$6F, dX=$005E
 TORPEDO_TRAJECTORY_LEFT_07:
-                        DB      $6A,$5B                 ; index $07, handle $19, X=$6A, dX=$005B
+                        DB      $6A,$5B                 ; index $07, decoded $19, X=$6A, dX=$005B
 TORPEDO_TRAJECTORY_LEFT_08:
-                        DB      $65,$58                 ; index $08, handle $1A, X=$65, dX=$0058
+                        DB      $65,$58                 ; index $08, decoded $1A, X=$65, dX=$0058
 TORPEDO_TRAJECTORY_LEFT_09:
-                        DB      $61,$55                 ; index $09, handle $1B, X=$61, dX=$0055
+                        DB      $61,$55                 ; index $09, decoded $1B, X=$61, dX=$0055
 TORPEDO_TRAJECTORY_LEFT_10:
-                        DB      $5C,$52                 ; index $0A, handle $1C, X=$5C, dX=$0052
+                        DB      $5C,$52                 ; index $0A, decoded $1C, X=$5C, dX=$0052
 TORPEDO_TRAJECTORY_LEFT_11:
-                        DB      $57,$4F                 ; index $0B, handle $1D, X=$57, dX=$004F
+                        DB      $57,$4F                 ; index $0B, decoded $1D, X=$57, dX=$004F
 TORPEDO_TRAJECTORY_LEFT_12:
-                        DB      $52,$4C                 ; index $0C, handle $1E, X=$52, dX=$004C
+                        DB      $52,$4C                 ; index $0C, decoded $1E, X=$52, dX=$004C
 TORPEDO_TRAJECTORY_LEFT_13:
-                        DB      $4E,$49                 ; index $0D, handle $1F, X=$4E, dX=$0049
+                        DB      $4E,$49                 ; index $0D, decoded $1F, X=$4E, dX=$0049
 TORPEDO_TRAJECTORY_LEFT_14:
-                        DB      $49,$46                 ; index $0E, handle $20, X=$49, dX=$0046
+                        DB      $49,$46                 ; index $0E, decoded $20, X=$49, dX=$0046
 TORPEDO_TRAJECTORY_LEFT_15:
-                        DB      $44,$43                 ; index $0F, handle $21, X=$44, dX=$0043
+                        DB      $44,$43                 ; index $0F, decoded $21, X=$44, dX=$0043
 TORPEDO_TRAJECTORY_LEFT_16:
-                        DB      $40,$40                 ; index $10, handle $22, X=$40, dX=$0040
+                        DB      $40,$40                 ; index $10, decoded $22, X=$40, dX=$0040
 TORPEDO_TRAJECTORY_LEFT_17:
-                        DB      $3B,$3D                 ; index $11, handle $23, X=$3B, dX=$003D
+                        DB      $3B,$3D                 ; index $11, decoded $23, X=$3B, dX=$003D
 TORPEDO_TRAJECTORY_LEFT_18:
-                        DB      $37,$3A                 ; index $12, handle $24, X=$37, dX=$003A
+                        DB      $37,$3A                 ; index $12, decoded $24, X=$37, dX=$003A
 TORPEDO_TRAJECTORY_LEFT_19:
-                        DB      $33,$37                 ; index $13, handle $25, X=$33, dX=$0037
+                        DB      $33,$37                 ; index $13, decoded $25, X=$33, dX=$0037
 TORPEDO_TRAJECTORY_LEFT_20:
-                        DB      $2E,$34                 ; index $14, handle $26, X=$2E, dX=$0034
+                        DB      $2E,$34                 ; index $14, decoded $26, X=$2E, dX=$0034
 TORPEDO_TRAJECTORY_LEFT_21:
-                        DB      $2A,$31                 ; index $15, handle $27, X=$2A, dX=$0031
+                        DB      $2A,$31                 ; index $15, decoded $27, X=$2A, dX=$0031
 TORPEDO_TRAJECTORY_LEFT_22:
-                        DB      $26,$2E                 ; index $16, handle $28, X=$26, dX=$002E
+                        DB      $26,$2E                 ; index $16, decoded $28, X=$26, dX=$002E
 TORPEDO_TRAJECTORY_LEFT_23:
-                        DB      $21,$2B                 ; index $17, handle $29, X=$21, dX=$002B
+                        DB      $21,$2B                 ; index $17, decoded $29, X=$21, dX=$002B
 TORPEDO_TRAJECTORY_LEFT_24:
-                        DB      $1D,$28                 ; index $18, handle $2A, X=$1D, dX=$0028
+                        DB      $1D,$28                 ; index $18, decoded $2A, X=$1D, dX=$0028
 TORPEDO_TRAJECTORY_LEFT_25:
-                        DB      $19,$25                 ; index $19, handle $2B, X=$19, dX=$0025
+                        DB      $19,$25                 ; index $19, decoded $2B, X=$19, dX=$0025
 TORPEDO_TRAJECTORY_LEFT_26:
-                        DB      $15,$22                 ; index $1A, handle $2C, X=$15, dX=$0022
+                        DB      $15,$22                 ; index $1A, decoded $2C, X=$15, dX=$0022
 TORPEDO_TRAJECTORY_LEFT_27:
-                        DB      $10,$1F                 ; index $1B, handle $2D, X=$10, dX=$001F
+                        DB      $10,$1F                 ; index $1B, decoded $2D, X=$10, dX=$001F
 TORPEDO_TRAJECTORY_LEFT_28:
-                        DB      $0D,$1C                 ; index $1C, handle $2E, X=$0D, dX=$001C
+                        DB      $0D,$1C                 ; index $1C, decoded $2E, X=$0D, dX=$001C
 TORPEDO_TRAJECTORY_LEFT_29:
-                        DB      $08,$19                 ; index $1D, handle $2F, X=$08, dX=$0019
+                        DB      $08,$19                 ; index $1D, decoded $2F, X=$08, dX=$0019
 TORPEDO_TRAJECTORY_LEFT_30:
-                        DB      $04,$16                 ; index $1E, handle $30, X=$04, dX=$0016
+                        DB      $04,$16                 ; index $1E, decoded $30, X=$04, dX=$0016
 TORPEDO_TRAJECTORY_LEFT_31:
-                        DB      $00,$13                 ; index $1F, handle $31, X=$00, dX=$0013
+                        DB      $00,$13                 ; index $1F, decoded $31-$3F, X=$00, dX=$0013
 
 TORPEDO_TRAJECTORY_RIGHT_TABLE:
 TORPEDO_TRAJECTORY_RIGHT_00:
-                        DB      $9B,$00                 ; index $00, handle $12, X=$9B, dX=$0000
+                        DB      $9B,$00                 ; index $00, decoded $00-$12, X=$9B, dX=$0000
 TORPEDO_TRAJECTORY_RIGHT_01:
-                        DB      $96,$FD                 ; index $01, handle $13, X=$96, dX=$FFFD
+                        DB      $96,$FD                 ; index $01, decoded $13, X=$96, dX=$FFFD
 TORPEDO_TRAJECTORY_RIGHT_02:
-                        DB      $92,$FA                 ; index $02, handle $14, X=$92, dX=$FFFA
+                        DB      $92,$FA                 ; index $02, decoded $14, X=$92, dX=$FFFA
 TORPEDO_TRAJECTORY_RIGHT_03:
-                        DB      $8E,$F7                 ; index $03, handle $15, X=$8E, dX=$FFF7
+                        DB      $8E,$F7                 ; index $03, decoded $15, X=$8E, dX=$FFF7
 TORPEDO_TRAJECTORY_RIGHT_04:
-                        DB      $8A,$F4                 ; index $04, handle $16, X=$8A, dX=$FFF4
+                        DB      $8A,$F4                 ; index $04, decoded $16, X=$8A, dX=$FFF4
 TORPEDO_TRAJECTORY_RIGHT_05:
-                        DB      $86,$F1                 ; index $05, handle $17, X=$86, dX=$FFF1
+                        DB      $86,$F1                 ; index $05, decoded $17, X=$86, dX=$FFF1
 TORPEDO_TRAJECTORY_RIGHT_06:
-                        DB      $81,$EE                 ; index $06, handle $18, X=$81, dX=$FFEE
+                        DB      $81,$EE                 ; index $06, decoded $18, X=$81, dX=$FFEE
 TORPEDO_TRAJECTORY_RIGHT_07:
-                        DB      $7D,$EB                 ; index $07, handle $19, X=$7D, dX=$FFEB
+                        DB      $7D,$EB                 ; index $07, decoded $19, X=$7D, dX=$FFEB
 TORPEDO_TRAJECTORY_RIGHT_08:
-                        DB      $79,$E8                 ; index $08, handle $1A, X=$79, dX=$FFE8
+                        DB      $79,$E8                 ; index $08, decoded $1A, X=$79, dX=$FFE8
 TORPEDO_TRAJECTORY_RIGHT_09:
-                        DB      $75,$E5                 ; index $09, handle $1B, X=$75, dX=$FFE5
+                        DB      $75,$E5                 ; index $09, decoded $1B, X=$75, dX=$FFE5
 TORPEDO_TRAJECTORY_RIGHT_10:
-                        DB      $70,$E2                 ; index $0A, handle $1C, X=$70, dX=$FFE2
+                        DB      $70,$E2                 ; index $0A, decoded $1C, X=$70, dX=$FFE2
 TORPEDO_TRAJECTORY_RIGHT_11:
-                        DB      $6C,$DF                 ; index $0B, handle $1D, X=$6C, dX=$FFDF
+                        DB      $6C,$DF                 ; index $0B, decoded $1D, X=$6C, dX=$FFDF
 TORPEDO_TRAJECTORY_RIGHT_12:
-                        DB      $68,$DC                 ; index $0C, handle $1E, X=$68, dX=$FFDC
+                        DB      $68,$DC                 ; index $0C, decoded $1E, X=$68, dX=$FFDC
 TORPEDO_TRAJECTORY_RIGHT_13:
-                        DB      $63,$D9                 ; index $0D, handle $1F, X=$63, dX=$FFD9
+                        DB      $63,$D9                 ; index $0D, decoded $1F, X=$63, dX=$FFD9
 TORPEDO_TRAJECTORY_RIGHT_14:
-                        DB      $5F,$D6                 ; index $0E, handle $20, X=$5F, dX=$FFD6
+                        DB      $5F,$D6                 ; index $0E, decoded $20, X=$5F, dX=$FFD6
 TORPEDO_TRAJECTORY_RIGHT_15:
-                        DB      $5A,$D3                 ; index $0F, handle $21, X=$5A, dX=$FFD3
+                        DB      $5A,$D3                 ; index $0F, decoded $21, X=$5A, dX=$FFD3
 TORPEDO_TRAJECTORY_RIGHT_16:
-                        DB      $56,$D0                 ; index $10, handle $22, X=$56, dX=$FFD0
+                        DB      $56,$D0                 ; index $10, decoded $22, X=$56, dX=$FFD0
 TORPEDO_TRAJECTORY_RIGHT_17:
-                        DB      $51,$CD                 ; index $11, handle $23, X=$51, dX=$FFCD
+                        DB      $51,$CD                 ; index $11, decoded $23, X=$51, dX=$FFCD
 TORPEDO_TRAJECTORY_RIGHT_18:
-                        DB      $4D,$CD                 ; index $12, handle $24, X=$4D, dX=$FFCD
+                        DB      $4D,$CD                 ; index $12, decoded $24, X=$4D, dX=$FFCD
 TORPEDO_TRAJECTORY_RIGHT_19:
-                        DB      $48,$CA                 ; index $13, handle $25, X=$48, dX=$FFCA
+                        DB      $48,$CA                 ; index $13, decoded $25, X=$48, dX=$FFCA
 TORPEDO_TRAJECTORY_RIGHT_20:
-                        DB      $43,$C7                 ; index $14, handle $26, X=$43, dX=$FFC7
+                        DB      $43,$C7                 ; index $14, decoded $26, X=$43, dX=$FFC7
 TORPEDO_TRAJECTORY_RIGHT_21:
-                        DB      $3E,$C4                 ; index $15, handle $27, X=$3E, dX=$FFC4
+                        DB      $3E,$C4                 ; index $15, decoded $27, X=$3E, dX=$FFC4
 TORPEDO_TRAJECTORY_RIGHT_22:
-                        DB      $3A,$C1                 ; index $16, handle $28, X=$3A, dX=$FFC1
+                        DB      $3A,$C1                 ; index $16, decoded $28, X=$3A, dX=$FFC1
 TORPEDO_TRAJECTORY_RIGHT_23:
-                        DB      $35,$BE                 ; index $17, handle $29, X=$35, dX=$FFBE
+                        DB      $35,$BE                 ; index $17, decoded $29, X=$35, dX=$FFBE
 TORPEDO_TRAJECTORY_RIGHT_24:
-                        DB      $30,$BB                 ; index $18, handle $2A, X=$30, dX=$FFBB
+                        DB      $30,$BB                 ; index $18, decoded $2A, X=$30, dX=$FFBB
 TORPEDO_TRAJECTORY_RIGHT_25:
-                        DB      $2B,$B8                 ; index $19, handle $2B, X=$2B, dX=$FFB8
+                        DB      $2B,$B8                 ; index $19, decoded $2B, X=$2B, dX=$FFB8
 TORPEDO_TRAJECTORY_RIGHT_26:
-                        DB      $25,$B5                 ; index $1A, handle $2C, X=$25, dX=$FFB5
+                        DB      $25,$B5                 ; index $1A, decoded $2C, X=$25, dX=$FFB5
 TORPEDO_TRAJECTORY_RIGHT_27:
-                        DB      $20,$B2                 ; index $1B, handle $2D, X=$20, dX=$FFB2
+                        DB      $20,$B2                 ; index $1B, decoded $2D, X=$20, dX=$FFB2
 TORPEDO_TRAJECTORY_RIGHT_28:
-                        DB      $1B,$AF                 ; index $1C, handle $2E, X=$1B, dX=$FFAF
+                        DB      $1B,$AF                 ; index $1C, decoded $2E, X=$1B, dX=$FFAF
 TORPEDO_TRAJECTORY_RIGHT_29:
-                        DB      $16,$AC                 ; index $1D, handle $2F, X=$16, dX=$FFAC
+                        DB      $16,$AC                 ; index $1D, decoded $2F, X=$16, dX=$FFAC
 TORPEDO_TRAJECTORY_RIGHT_30:
-                        DB      $10,$A9                 ; index $1E, handle $30, X=$10, dX=$FFA9
+                        DB      $10,$A9                 ; index $1E, decoded $30, X=$10, dX=$FFA9
 TORPEDO_TRAJECTORY_RIGHT_31:
-                        DB      $0A,$A6                 ; index $1F, handle $31, X=$0A, dX=$FFA6
+                        DB      $0A,$A6                 ; index $1F, decoded $31-$3F, X=$0A, dX=$FFA6
 ;-------------------------------------------------------------------------------
 ; $0DC8: Cyclic surface-target sequence for both target lanes
 ;-------------------------------------------------------------------------------
@@ -4570,6 +4590,13 @@ hit_streak_selected:
 ;-------------------------------------------------------------------------------
 ; $14B4: Update one torpedo and resolve its collision lane
 ;-------------------------------------------------------------------------------
+; Torpedoes are visited at 30 Hz.  With initial Y=$BB00, vY=-$0400 and
+; aY=+$000C, visit n begins collision work at:
+;   vY(n) = -$0400 + n*$000C
+;   Y(n)  =  $BB00 - n*$0400 + $000C*n*(n+1)/2
+; X has no acceleration: X(n)=X(0)+n*dX.  Motion and boundary tests precede
+; collision.  A coordinate crossing retires the object on that visit without
+; testing a lane.
 UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
                         LD      (IX+OBJECT_BITMAP_PTR_HI),H
                         LD      (IX+OBJECT_BITMAP_PTR_LO),L
@@ -4622,7 +4649,10 @@ UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
 
 ; The torpedo's high-byte Y coordinate selects one of five two-record lanes.
 ; The table establishes the vertical band; no second Y comparison is made.
-; C preserves the one-based lane number: 1-2 are targets, 3-5 are mines.
+; For a non-colliding path the update visits are: 1-15 lane 5, 16-25 lane 4,
+; 26-35 lane 3, 36-47 lane 2, and 48-58 lane 1.  Visit 59 crosses Y=$2300 and
+; retires before collision.  C preserves the one-based lane number: 1-2 are
+; targets, 3-5 are mines.
                         LD      A,(IX+OBJECT_Y_POSITION_HI)
                         LD      B,$05
                         LD      HL,TORPEDO_COLLISION_LANE_TABLE
