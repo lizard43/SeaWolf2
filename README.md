@@ -16,11 +16,15 @@ not describe that structure correctly.
 - The generated `roms/seawolf2.zip` runs successfully in MAME 0.289.
 - A controlled title-string edit was tested in MAME, confirming that MAME was
   executing the locally assembled ROM set.
-- The reset path, native TERSE kernel, initial thread at `$02F0`, and control
-  thread at `$0544` are reconstructed as assembly.
+- The reset path, native TERSE kernel, initial thread at `$02F0`, nested
+  initialization thread at `$036F`, and control thread at `$0544` are
+  reconstructed as assembly.
 - Power-on diagnostics are reconstructed as native Z80 and documented.
 - Character fonts, title and status strings, and the English, German, and
   French prompt tables are identified.
+- Machine initialization, credit/start selection, coinage paths, language
+  selection, prompt rendering, text rendering, and player-status rendering are
+  reconstructed as native Z80.
 - The 25-byte object-record ABI, all three scheduler pools, object selection,
   fixed-point movement, rendering, and the target/torpedo/mine handlers are
   reconstructed as native Z80.
@@ -38,10 +42,9 @@ not describe that structure correctly.
 - Collision geometry, station ownership, packed-BCD scoring, four-hit bonuses,
   hit overlays, explosion timing, extended patrol, final-score/high-score
   selection, and localized high-score indication are fully traced.
-- The remaining `DB` regions are inventoried by address and type. They contain
-  718 bytes of native Z80 awaiting promotion, 31 bytes of TERSE stream/inline
-  operands, verified tables and graphics, ROM fill, and one uncertain byte at
-  `$1385`.
+- Every reachable native Z80 routine is expressed as assembly. The remaining
+  2,759 `DB` bytes are verified TERSE operands, tables, graphics/text, ROM fill,
+  and one uncertain byte at `$1385`.
 
 ## ROM organization
 
@@ -56,6 +59,76 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
+
+## Foreground initialization and input
+
+`CLEAR_RAM_AND_LOWER_VIDEO` clears all work RAM at `$C000-$C3FF` and video RAM
+at `$77F0-$7FAF`. `INITIALIZE_MACHINE` then:
+
+1. Enables IM 2 interrupts.
+2. Copies the 16-byte moving-raster template to `$C212-$C221`.
+3. Selects raster schedule `$19D8` or `$1A16` from DIP port `$13` bit 6.
+4. Primes the first raster interrupt record and color split `$2A`.
+5. Initializes the target-type sequence cursor to `$0DC8`.
+
+The frame interrupt debounces coin input on port `$12` bit 0. A rising edge
+increments `COIN_INPUT_QUEUE`. `PULSE_COIN_COUNTER` consumes one queued event,
+drives a ten-frame mechanical-counter pulse, and increments `CREDIT_COUNT`.
+Start inputs are port `$12` bit 1 for one player and bit 2 for two players.
+
+The start routine masks DIP port `$13` with `$09` and implements four pricing
+paths:
+
+| DIP mask | One-player cost | Two-player cost | Enabled state |
+| ---: | ---: | ---: | --- |
+| `$09` | 1 | 2 | 1P at one credit; 2P at two or more |
+| `$01` | 1 | 1 | Both buttons at one or more credits |
+| `$00` | 2 | 2 | Both buttons at two or more credits |
+| `$08` | 2 | 4 | 1P at two credits; 2P at four or more |
+
+The `$08` path intentionally disables both buttons at three credits and asks
+for one more credit for a two-player game. Accepted starts subtract the stored
+cost and return to the outer TERSE game loop.
+
+`READ_LANGUAGE_SELECTION` reads port `$12` bit 3 and port `$11` bit 6. No bit
+selects English, bit 3 alone selects German, and bit 6 selects French with
+priority when both bits are set. The selected language offsets the nine prompt
+pointer lists before rendering them at X=`$28`, Y=`$3E`, with a Y step of
+`$0C` per line.
+
+## Foreground renderer
+
+`DRAW_TEXT` consumes zero-terminated character strings. Character code `$30`
+is font index zero; every glyph is ten source bytes. The normal path duplicates
+each source byte into two adjacent Magic-RAM writes, advances one `$50`-byte
+video row, and advances text X by `$04`. A blank two-byte row is written above
+and below each normal glyph.
+
+`DRAW_TEXT_DOUBLE_SIZE` selects the alternate glyph path. Each source byte is
+expanded through scratch addresses `$3FFE/$3FFF`, read back at `$7FFE/$7FFF`,
+and duplicated into four destination bytes. Row stride becomes `$A0` and text
+X advances by `$08`.
+
+`DRAW_PLAYER_STATUS` draws a five-row, three-byte station bitmap at X=`$07`
+and X=`$82`; the left panel is omitted in one-player mode. A separate fixed
+panel is drawn at X=`$4D`. `DRAW_SMALL_BITMAP` duplicates each source byte,
+producing six destination bytes per row.
+
+## Remaining raw data
+
+No reachable native Z80 remains encoded as `DB`.
+
+| Classification | Regions | Bytes |
+| --- | ---: | ---: |
+| TERSE inline operands | 5 | 15 |
+| Lookup, property, and pointer tables | 9 | 350 |
+| Graphics, text, and diagnostic patterns | 9 | 2,317 |
+| Padding and unused ROM | 1 | 76 |
+| Uncertain mixed role | 1 | 1 |
+| **Total** | **25** | **2,759** |
+
+The uncertain byte is `$8E` at `$1385`. It is not referenced as data and is
+not reachable from adjacent native code.
 
 ## Object types
 
@@ -373,8 +446,8 @@ return address following `RST $08` as the new threaded instruction pointer.
 The initial thread at `$02F0` controls startup and the outer game loop. The
 native entry at `$0544` enters the structured control thread at `$0545`, which
 coordinates game state, object creation, hit processing, sonar, firing, and
-coin handling. The 22-byte stream at `$036F-$0384` is the remaining raw TERSE
-program.
+coin handling. The nested initialization thread at `$036F-$0384` is expressed
+as named execution cells. Its six Y/X/size operand bytes remain explicit data.
 
 ## Raster interrupt scheduler
 

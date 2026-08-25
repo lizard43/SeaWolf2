@@ -11,26 +11,17 @@
 ; Remaining raw-region inventory
 ;
 ; Every byte still emitted with DB is classified below.  The inventory covers
-; 3,493 bytes in 32 classified address regions; no DB byte is omitted.  Native
-; spans are conversion work.  TERSE cells/operands, tables, graphics/text, and
-; padding are true data, although their internal labels can still improve.
+; 2,759 bytes in 25 classified address regions; no DB byte is omitted.  All
+; reachable native Z80 is expressed as instructions.  Remaining DB bytes are
+; TERSE inline operands, tables, graphics/text, padding, or explicitly unknown.
 ;
-; NATIVE Z80 AWAITING PROMOTION                  8 spans / 718 bytes
-;   $0302-$0320  work/video clear primitive
-;   $0321-$0354  machine and interrupt initialization
-;   $0365-$036E  main-state initializer and TERSE entry
-;   $0385-$0396  runtime-state reset prefix
-;   $03F6-$0500  start selection and prompt control
-;   $0501-$0526  prompt pointer-list renderer
-;   $0527-$0543  language-selection reader
-;   $15E4-$16F4  native text and small-bitmap renderer
-;
-; TERSE PROGRAM AND INLINE OPERANDS              4 spans / 31 bytes
-;   $036F-$0384  MAIN_INITIALIZATION_THREAD inline cells and operands
+; TERSE INLINE OPERANDS                          5 spans / 15 bytes
+;   $0375-$0377  HIGH SCORE text Y/X/size operands
+;   $037E-$0380  title text Y/X/size operands
 ;   $05F6-$05F8  English GAME OVER position/renderer operands
 ;   $0604-$0606  German GAME OVER position/renderer operands
 ;   $060E-$0610  French GAME OVER position/renderer operands
-;   Other TERSE programs are already expressed as labeled DW cells.
+;   All TERSE execution cells are expressed as labeled DW words.
 ;
 ; LOOKUP / PROPERTY / POINTER TABLES             9 spans / 350 DB bytes
 ;   $0184-$0185  video-RAM diagnostic range parameters
@@ -46,8 +37,8 @@
 ; GRAPHICS, TEXT OR DIAGNOSTIC PATTERN DATA       9 spans / 2,317 bytes
 ;   $00B0-$00E7  self-test color/pixel patterns
 ;   $0E3F-$119E  object and animation bitmaps
-;   $119F-$135B  character font
-;   $135C-$136F  player-status graphics
+;   $119F-$134C  character font
+;   $134D-$136F  player-status graphics
 ;   $1370-$1384  title and Super Sub labels
 ;   $1AE7-$1B58  short game-state messages
 ;   $1BC3-$1C72  English prompt text
@@ -60,7 +51,7 @@
 ; GENUINELY UNCERTAIN                            1 span / 1 byte
 ;   $1385        unreferenced $8E between TEXT_SUB and the $1386 ISR entry
 ;
-; Inventory invariant: remaining DB byte count = 3,493.
+; Inventory invariant: remaining DB byte count = 2,759.
 ;===============================================================================
 
 PORT_COLOR_0            EQU     $00
@@ -79,6 +70,7 @@ PORT_MAGIC_CONTROL      EQU     $0C
 PORT_INTERRUPT_VECTOR   EQU     $0D
 PORT_INTERRUPT_ENABLE   EQU     $0E
 PORT_INTERRUPT_LINE     EQU     $0F
+PORT_MAGIC_EXPAND       EQU     $19
 PORT_P2_HANDLE          EQU     $10
 PORT_P1_HANDLE          EQU     $11
 PORT_COIN_START         EQU     $12
@@ -102,7 +94,67 @@ TEXT_X_POSITION_HI      EQU     $C1FF
 TEXT_Y_POSITION_LO      EQU     $C200
 TEXT_Y_POSITION         EQU     $C201
 TEXT_COLOR              EQU     $C202
-TEXT_RENDER_LOCK        EQU     $C1DD
+TEXT_DOUBLE_SIZE_FLAG   EQU     $C1DD
+
+; Foreground input, credit and prompt state.
+START_ELIGIBILITY_FLAGS EQU     $C203
+START_CREDIT_COST       EQU     $C204
+LANGUAGE_SELECTION      EQU     $C205
+CREDIT_COUNT            EQU     $C206
+COIN_INPUT_QUEUE        EQU     $C207
+COIN_INPUT_EDGE_LATCH   EQU     $C1F9
+UNREFERENCED_RUNTIME_BYTE EQU   $C20A
+TARGET_TYPE_SEQUENCE_CURSOR EQU $C20B
+
+START_FLAG_ONE_PLAYER   EQU     $02
+START_FLAG_TWO_PLAYER   EQU     $04
+INPUT_ONE_PLAYER_START_MASK EQU $02
+INPUT_TWO_PLAYER_START_MASK EQU $04
+COINAGE_DIP_MASK        EQU     $09
+LANGUAGE_COIN_PORT_MASK EQU     $08
+LANGUAGE_P1_PORT_MASK   EQU     $40
+LANGUAGE_ENGLISH        EQU     $00
+LANGUAGE_GERMAN         EQU     $01
+LANGUAGE_FRENCH         EQU     $02
+
+INITIAL_INTERRUPT_ENABLE EQU   $08
+RASTER_SCHEDULE_DIP_MASK EQU   $40
+INITIAL_COLOR_SPLIT_VALUE EQU  $2A
+
+PROMPT_TEXT_COLOR       EQU     $0C
+PROMPT_TEXT_X           EQU     $28
+PROMPT_INITIAL_Y        EQU     $3E
+PROMPT_LINE_Y_STEP      EQU     $0C
+PROMPT_TEXT_X_WORD      EQU     $2800
+PROMPT_INITIAL_Y_WORD   EQU     $3E00
+PROMPT_LINE_Y_STEP_WORD EQU     $0C00
+GERMAN_PROMPT_TABLE_OFFSET EQU  $011A
+FRENCH_PROMPT_TABLE_OFFSET  EQU  $0339
+
+FONT_ASCII_BASE         EQU     $30
+FONT_BYTES_PER_GLYPH    EQU     $0A
+VIDEO_ROW_STRIDE        EQU     $0050
+TEXT_DOUBLE_ROW_STRIDE  EQU     $00A0
+TEXT_NORMAL_X_ADVANCE   EQU     $0400
+TEXT_DOUBLE_X_ADVANCE   EQU     $0800
+MAGIC_MODE_TEXT_NORMAL  EQU     $08
+MAGIC_MODE_TEXT_DOUBLE  EQU     $18
+MAGIC_EXPAND_DEFAULT    EQU     $0C
+MAGIC_SCRATCH_WRITE_0   EQU     $3FFE
+MAGIC_SCRATCH_WRITE_1   EQU     $3FFF
+MAGIC_SCRATCH_READ_0    EQU     $7FFE
+MAGIC_SCRATCH_READ_1    EQU     $7FFF
+
+PLAYER_STATUS_COLOR     EQU     $0C
+PLAYER_STATUS_Y         EQU     $B8
+PLAYER_STATUS_LEFT_X    EQU     $07
+PLAYER_STATUS_RIGHT_X   EQU     $82
+PLAYER_STATUS_CENTER_X  EQU     $4D
+PLAYER_STATUS_LEFT_X_WORD   EQU $0700
+PLAYER_STATUS_RIGHT_X_WORD  EQU $8200
+PLAYER_STATUS_CENTER_X_WORD EQU $4D00
+PLAYER_STATUS_ROWS      EQU     $05
+PLAYER_STATUS_SOURCE_WIDTH EQU  $03
 
 SELF_TEST_TEXT_BUFFER   EQU     $C000
 SELF_TEST_ROM_BLOCK_SIZE EQU    $0800
@@ -142,7 +194,6 @@ LEFT_BONUS_DISPLAY_ACTIVE       EQU $C1F4
 LEFT_BONUS_DISPLAY_VALUE_BCD    EQU $C1F5
 SUPER_SUB_SPAWN_COUNT           EQU $C1F7
 NEW_HIGH_SCORE_FLAG             EQU $C1F8
-LANGUAGE_SELECTION              EQU $C205
 
 HIGH_SCORE_BCD_LO               EQU $C208
 HIGH_SCORE_BCD_HI               EQU $C209
@@ -907,54 +958,63 @@ initial_loop:           DW      FINALIZE_SCORES_AND_DRAW_GAME_OVER
                         DW      initial_loop
 
 ;-------------------------------------------------------------------------------
-; $0302: Clear work RAM and lower video area
+; $0302: Clear work RAM and the lower video/status area
 ;-------------------------------------------------------------------------------
 CLEAR_RAM_AND_LOWER_VIDEO:
-                        DB      $21,$00,$C0             ; $0302  LD HL,$C000
-                        DB      $11,$00,$04             ; $0305  LD DE,$0400
-                        DB      $AF                     ; $0308  XOR A
-                        DB      $77                     ; $0309  LD (HL),A
-                        DB      $23                     ; $030A  INC HL
-                        DB      $1D                     ; $030B  DEC E
-                        DB      $20,$FB                 ; $030C  JR NZ,$0309
-                        DB      $15                     ; $030E  DEC D
-                        DB      $20,$F8                 ; $030F  JR NZ,$0309
-                        DB      $21,$F0,$77             ; $0311  LD HL,$77F0
-                        DB      $11,$C0,$08             ; $0314  LD DE,$08C0
-                        DB      $77                     ; $0317  LD (HL),A
-                        DB      $23                     ; $0318  INC HL
-                        DB      $1D                     ; $0319  DEC E
-                        DB      $20,$FB                 ; $031A  JR NZ,$0317
-                        DB      $15                     ; $031C  DEC D
-                        DB      $20,$F8                 ; $031D  JR NZ,$0317
-                        DB      $FD,$E9                 ; $031F  JP (IY)
+                        LD      HL,RAM_BASE
+                        LD      DE,$0400
+                        XOR     A
+clear_all_work_ram:     LD      (HL),A
+                        INC     HL
+                        DEC     E
+                        JR      NZ,clear_all_work_ram
+                        DEC     D
+                        JR      NZ,clear_all_work_ram
+
+; Clear $77F0-$7FAF: the lower $7C0 bytes of visible video RAM.
+                        LD      HL,$77F0
+                        LD      DE,$08C0
+clear_lower_video:      LD      (HL),A
+                        INC     HL
+                        DEC     E
+                        JR      NZ,clear_lower_video
+                        DEC     D
+                        JR      NZ,clear_lower_video
+                        JP      (IY)
 
 ;-------------------------------------------------------------------------------
-; $0321: Interrupt, language pointer, color and video initialization
+; $0321: Interrupt schedule, moving raster state and object-sequence setup
 ;-------------------------------------------------------------------------------
 INITIALIZE_MACHINE:
-                        DB      $C5                     ; $0321  PUSH BC
-                        DB      $3E,$08                 ; $0322  LD A,$08
-                        DB      $D3,$0E                 ; $0324  OUT ($0E),A
-                        DB      $ED,$5E                 ; $0326  IM 2
-                        DB      $01,$10,$00             ; $0328  LD BC,$0010
-                        DB      $21,$55,$03             ; $032B  LD HL,INITIAL_RAM_TEMPLATE
-                        DB      $11,$12,$C2             ; $032E  LD DE,RASTER_MOTION_STATE_0
-                        DB      $ED,$B0                 ; $0331  LDIR
-                        DB      $DB,$13                 ; $0333  IN A,($13)
-                        DB      $E6,$40                 ; $0335  AND $40
-                        DB      $21,$16,$1A             ; $0337  LD HL,INTERRUPT_SCHEDULE_SET_B
-                        DB      $28,$03                 ; $033A  JR Z,$033F
-                        DB      $21,$D8,$19             ; $033C  LD HL,INTERRUPT_SCHEDULE_SET_A
-                        DB      $22,$FC,$C1             ; $033F  LD (INTERRUPT_SCHEDULE_CURSOR),HL
-                        DB      $22,$0D,$C2             ; $0342  LD (INTERRUPT_SCHEDULE_BASE),HL
-                        DB      $3E,$2A                 ; $0345  LD A,$2A
-                        DB      $D3,$09                 ; $0347  OUT ($09),A
-                        DB      $CD,$48,$14             ; $0349  CALL ALTERNATE_RASTER_INTERRUPT_HANDLER
-                        DB      $C1                     ; $034C  POP BC
-                        DB      $21,$C8,$0D             ; $034D  LD HL,$0DC8
-                        DB      $22,$0B,$C2             ; $0350  LD ($C20B),HL
-                        DB      $FD,$E9                 ; $0353  JP (IY)
+                        PUSH    BC
+                        LD      A,INITIAL_INTERRUPT_ENABLE
+                        OUT     (PORT_INTERRUPT_ENABLE),A
+                        IM      2
+
+; Seed four four-byte moving-raster states at $C212-$C221.
+                        LD      BC,$0010
+                        LD      HL,INITIAL_RAM_TEMPLATE
+                        LD      DE,RASTER_MOTION_STATE_0
+                        LDIR
+
+; DIP bit 6 selects one of the two six-boundary raster palettes.
+                        IN      A,(PORT_DIP_SWITCHES)
+                        AND     RASTER_SCHEDULE_DIP_MASK
+                        LD      HL,INTERRUPT_SCHEDULE_SET_B
+                        JR      Z,interrupt_schedule_selected
+                        LD      HL,INTERRUPT_SCHEDULE_SET_A
+interrupt_schedule_selected:
+                        LD      (INTERRUPT_SCHEDULE_CURSOR),HL
+                        LD      (INTERRUPT_SCHEDULE_BASE),HL
+                        LD      A,INITIAL_COLOR_SPLIT_VALUE
+                        OUT     (PORT_COLOR_SPLIT),A
+
+; Prime the first schedule record before normal IM 2 interrupts begin.
+                        CALL    ALTERNATE_RASTER_INTERRUPT_HANDLER
+                        POP     BC
+                        LD      HL,TARGET_TYPE_SEQUENCE
+                        LD      (TARGET_TYPE_SEQUENCE_CURSOR),HL
+                        JP      (IY)
 
 ;-------------------------------------------------------------------------------
 ; $0355: Initial state for the four moving raster boundaries
@@ -969,33 +1029,42 @@ INITIAL_RAM_TEMPLATE:
 ; $0365: Clear top-level state and enter its TERSE thread
 ;-------------------------------------------------------------------------------
 INITIALIZE_MAIN_STATE:
-                        DB      $AF                     ; $0365  XOR A
-                        DB      $32,$FB,$C1             ; $0366  LD ($C1FB),A
-                        DB      $32,$FA,$C1             ; $0369  LD ($C1FA),A
-                        DB      $D3,$41                 ; $036C  OUT ($41),A
-                        DB      $CF                     ; $036E  RST $08
+                        XOR     A
+                        LD      (ACTIVE_PLAYER_COUNT),A
+                        LD      (SOUND_DIVE_PAN_XOR),A
+                        OUT     (PORT_SOUND_CONTROL),A
+                        RST     $08
 
 ;-------------------------------------------------------------------------------
-; $036F: Inline TERSE cells and operands
+; $036F: Nested initialization TERSE thread
 ;-------------------------------------------------------------------------------
 MAIN_INITIALIZATION_THREAD:
-                        DB      $97,$03,$6E,$0C,$17,$1B,$02,$4A,$00,$99,$0C,$6E,$0C,$70,$13,$48 ; $036F  ..n....J...n.p.H
-                        DB      $3E,$00,$44,$05,$39,$00                                         ; $037F  >.D.9.
+                        DW      CLEAR_GAME_STATE_AND_PLAYFIELD
+                        DW      TERSE_DRAW_TEXT_INLINE
+                        DW      TEXT_HIGH_SCORE
+                        DB      $02,$4A,$00             ; Y=$02, X=$4A, normal size
+                        DW      DRAW_HIGH_SCORE_WORD
+                        DW      TERSE_DRAW_TEXT_INLINE
+                        DW      TEXT_SEAWOLF_II
+                        DB      $48,$3E,$00             ; Y=$48, X=$3E, normal size
+                        DW      CONTROL_THREAD_WORD
+                        DW      TERSE_RETURN
 
 ;-------------------------------------------------------------------------------
 ; $0385: Clear runtime RAM/video state
 ;-------------------------------------------------------------------------------
 RESET_RUNTIME_STATE:
-                        DB      $AF                     ; $0385  XOR A
-                        DB      $32,$0A,$C2             ; $0386  LD ($C20A),A
-                        DB      $11,$C0,$08             ; $0389  LD DE,$08C0
-                        DB      $21,$F0,$77             ; $038C  LD HL,$77F0
-                        DB      $77                     ; $038F  LD (HL),A
-                        DB      $23                     ; $0390  INC HL
-                        DB      $1D                     ; $0391  DEC E
-                        DB      $20,$FB                 ; $0392  JR NZ,$038F
-                        DB      $15                     ; $0394  DEC D
-                        DB      $20,$F8                 ; $0395  JR NZ,$038F
+                        XOR     A
+; $C20A has no other reference in the ROM; its reset is retained explicitly.
+                        LD      (UNREFERENCED_RUNTIME_BYTE),A
+                        LD      DE,$08C0
+                        LD      HL,$77F0
+reset_lower_video:      LD      (HL),A
+                        INC     HL
+                        DEC     E
+                        JR      NZ,reset_lower_video
+                        DEC     D
+                        JR      NZ,reset_lower_video
 ; Normal game reset enters here by falling through from RESET_RUNTIME_STATE.
 ; The interactive service test jumps here directly, using IY as its return.
 CLEAR_GAME_STATE_AND_PLAYFIELD:
@@ -1065,171 +1134,218 @@ draw_initial_player_status:
 ;-------------------------------------------------------------------------------
 ; $03F6: Start/credit selection and prompt rendering
 ;-------------------------------------------------------------------------------
+; START_ELIGIBILITY_FLAGS is recomputed from DIP port bits 3/0 and the current
+; credit count.  Bit 1 enables the one-player button; bit 2 enables two-player.
+; START_CREDIT_COST is committed only after an enabled button is pressed.
 START_SELECTION_AND_PROMPTS:
-                        DB      $AF                     ; $03F6  XOR A
-                        DB      $32,$03,$C2             ; $03F7  LD ($C203),A
-                        DB      $32,$04,$C2             ; $03FA  LD ($C204),A
-                        DB      $FD,$E5                 ; $03FD  PUSH IY
-                        DB      $FD,$21,$06,$04         ; $03FF  LD IY,$0406
-                        DB      $C3,$56,$0C             ; $0403  JP $0C56
-                        DB      $FD,$E1                 ; $0406  POP IY
-                        DB      $3A,$03,$C2             ; $0408  LD A,($C203)
-                        DB      $CB,$4F                 ; $040B  BIT 1,A
-                        DB      $28,$17                 ; $040D  JR Z,$0426
-                        DB      $DB,$12                 ; $040F  IN A,($12)
-                        DB      $CB,$4F                 ; $0411  BIT 1,A
-                        DB      $28,$11                 ; $0413  JR Z,$0426
-                        DB      $3E,$01                 ; $0415  LD A,$01
-                        DB      $32,$FB,$C1             ; $0417  LD ($C1FB),A
-                        DB      $3A,$06,$C2             ; $041A  LD A,($C206)
-                        DB      $21,$04,$C2             ; $041D  LD HL,$C204
-                        DB      $96                     ; $0420  SUB (HL)
-                        DB      $32,$06,$C2             ; $0421  LD ($C206),A
-                        DB      $FD,$E9                 ; $0424  JP (IY)
-                        DB      $3A,$03,$C2             ; $0426  LD A,($C203)
-                        DB      $CB,$57                 ; $0429  BIT 2,A
-                        DB      $28,$0D                 ; $042B  JR Z,$043A
-                        DB      $DB,$12                 ; $042D  IN A,($12)
-                        DB      $CB,$57                 ; $042F  BIT 2,A
-                        DB      $28,$07                 ; $0431  JR Z,$043A
-                        DB      $3E,$02                 ; $0433  LD A,$02
-                        DB      $32,$FB,$C1             ; $0435  LD ($C1FB),A
-                        DB      $18,$E0                 ; $0438  JR $041A
-                        DB      $21,$03,$C2             ; $043A  LD HL,$C203
-                        DB      $DB,$13                 ; $043D  IN A,($13)
-                        DB      $E6,$09                 ; $043F  AND $09
-                        DB      $B7                     ; $0441  OR A
-                        DB      $CA,$74,$04             ; $0442  JP Z,$0474
-                        DB      $FE,$08                 ; $0445  CP $08
-                        DB      $CA,$88,$04             ; $0447  JP Z,$0488
-                        DB      $FE,$01                 ; $044A  CP $01
-                        DB      $CA,$6A,$04             ; $044C  JP Z,$046A
-                        DB      $3A,$06,$C2             ; $044F  LD A,($C206)
-                        DB      $FE,$01                 ; $0452  CP $01
-                        DB      $20,$0A                 ; $0454  JR NZ,$0460
-                        DB      $CB,$CE                 ; $0456  SET 1,(HL)
-                        DB      $CB,$96                 ; $0458  RES 2,(HL)
-                        DB      $23                     ; $045A  INC HL
-                        DB      $36,$01                 ; $045B  LD (HL),$01
-                        DB      $C3,$B4,$04             ; $045D  JP $04B4
-                        DB      $CB,$8E                 ; $0460  RES 1,(HL)
-                        DB      $CB,$D6                 ; $0462  SET 2,(HL)
-                        DB      $23                     ; $0464  INC HL
-                        DB      $36,$02                 ; $0465  LD (HL),$02
-                        DB      $C3,$D9,$04             ; $0467  JP $04D9
-                        DB      $CB,$CE                 ; $046A  SET 1,(HL)
-                        DB      $CB,$D6                 ; $046C  SET 2,(HL)
-                        DB      $23                     ; $046E  INC HL
-                        DB      $36,$01                 ; $046F  LD (HL),$01
-                        DB      $C3,$DE,$04             ; $0471  JP $04DE
-                        DB      $3A,$06,$C2             ; $0474  LD A,($C206)
-                        DB      $FE,$01                 ; $0477  CP $01
-                        DB      $20,$03                 ; $0479  JR NZ,$047E
-                        DB      $C3,$E3,$04             ; $047B  JP $04E3
-                        DB      $CB,$CE                 ; $047E  SET 1,(HL)
-                        DB      $CB,$D6                 ; $0480  SET 2,(HL)
-                        DB      $23                     ; $0482  INC HL
-                        DB      $36,$02                 ; $0483  LD (HL),$02
-                        DB      $C3,$E8,$04             ; $0485  JP $04E8
-                        DB      $3A,$06,$C2             ; $0488  LD A,($C206)
-                        DB      $FE,$01                 ; $048B  CP $01
-                        DB      $20,$03                 ; $048D  JR NZ,$0492
-                        DB      $C3,$ED,$04             ; $048F  JP $04ED
-                        DB      $FE,$02                 ; $0492  CP $02
-                        DB      $20,$09                 ; $0494  JR NZ,$049F
-                        DB      $CB,$CE                 ; $0496  SET 1,(HL)
-                        DB      $CB,$96                 ; $0498  RES 2,(HL)
-                        DB      $23                     ; $049A  INC HL
-                        DB      $77                     ; $049B  LD (HL),A
-                        DB      $C3,$F2,$04             ; $049C  JP $04F2
-                        DB      $FE,$03                 ; $049F  CP $03
-                        DB      $20,$07                 ; $04A1  JR NZ,$04AA
-                        DB      $CB,$8E                 ; $04A3  RES 1,(HL)
-                        DB      $CB,$96                 ; $04A5  RES 2,(HL)
-                        DB      $C3,$F7,$04             ; $04A7  JP $04F7
-                        DB      $CB,$8E                 ; $04AA  RES 1,(HL)
-                        DB      $CB,$D6                 ; $04AC  SET 2,(HL)
-                        DB      $23                     ; $04AE  INC HL
-                        DB      $36,$04                 ; $04AF  LD (HL),$04
-                        DB      $C3,$FC,$04             ; $04B1  JP $04FC
-                        DB      $21,$59,$1B             ; $04B4  LD HL,$1B59
-                        DB      $CD,$27,$05             ; $04B7  CALL $0527
-                        DB      $11,$00,$00             ; $04BA  LD DE,$0000
-                        DB      $FE,$00                 ; $04BD  CP $00
-                        DB      $28,$0A                 ; $04BF  JR Z,$04CB
-                        DB      $11,$1A,$01             ; $04C1  LD DE,$011A
-                        DB      $FE,$01                 ; $04C4  CP $01
-                        DB      $28,$03                 ; $04C6  JR Z,$04CB
-                        DB      $11,$39,$03             ; $04C8  LD DE,$0339
-                        DB      $19                     ; $04CB  ADD HL,DE
-                        DB      $11,$00,$3E             ; $04CC  LD DE,$3E00
-                        DB      $ED,$53,$00,$C2         ; $04CF  LD ($C200),DE
-                        DB      $CD,$01,$05             ; $04D3  CALL $0501
-                        DB      $C3,$FD,$03             ; $04D6  JP $03FD
-                        DB      $21,$67,$1B             ; $04D9  LD HL,$1B67
-                        DB      $18,$D9                 ; $04DC  JR $04B7
-                        DB      $21,$75,$1B             ; $04DE  LD HL,$1B75
-                        DB      $18,$D4                 ; $04E1  JR $04B7
-                        DB      $21,$81,$1B             ; $04E3  LD HL,$1B81
-                        DB      $18,$CF                 ; $04E6  JR $04B7
-                        DB      $21,$87,$1B             ; $04E8  LD HL,$1B87
-                        DB      $18,$CA                 ; $04EB  JR $04B7
-                        DB      $21,$93,$1B             ; $04ED  LD HL,$1B93
-                        DB      $18,$C5                 ; $04F0  JR $04B7
-                        DB      $21,$99,$1B             ; $04F2  LD HL,$1B99
-                        DB      $18,$C0                 ; $04F5  JR $04B7
-                        DB      $21,$A7,$1B             ; $04F7  LD HL,$1BA7
-                        DB      $18,$BB                 ; $04FA  JR $04B7
-                        DB      $21,$B5,$1B             ; $04FC  LD HL,$1BB5
-                        DB      $18,$B6                 ; $04FF  JR $04B7
+                        XOR     A
+                        LD      (START_ELIGIBILITY_FLAGS),A
+                        LD      (START_CREDIT_COST),A
+
+start_selection_loop:   PUSH    IY
+                        LD      IY,start_prompt_after_coin_service
+                        JP      PULSE_COIN_COUNTER
+start_prompt_after_coin_service:
+                        POP     IY
+
+; Accept an enabled one-player start input.
+                        LD      A,(START_ELIGIBILITY_FLAGS)
+                        BIT     1,A
+                        JR      Z,check_two_player_start
+                        IN      A,(PORT_COIN_START)
+                        BIT     1,A
+                        JR      Z,check_two_player_start
+                        LD      A,$01
+                        LD      (ACTIVE_PLAYER_COUNT),A
+commit_start_credits:   LD      A,(CREDIT_COUNT)
+                        LD      HL,START_CREDIT_COST
+                        SUB     (HL)
+                        LD      (CREDIT_COUNT),A
+                        JP      (IY)
+
+; Accept an enabled two-player start input.
+check_two_player_start: LD      A,(START_ELIGIBILITY_FLAGS)
+                        BIT     2,A
+                        JR      Z,derive_start_options
+                        IN      A,(PORT_COIN_START)
+                        BIT     2,A
+                        JR      Z,derive_start_options
+                        LD      A,$02
+                        LD      (ACTIVE_PLAYER_COUNT),A
+                        JR      commit_start_credits
+
+; The attract/control thread enters this word only after CREDIT_COUNT becomes
+; nonzero.  Tests below for values other than one therefore mean two or more.
+derive_start_options:   LD      HL,START_ELIGIBILITY_FLAGS
+                        IN      A,(PORT_DIP_SWITCHES)
+                        AND     COINAGE_DIP_MASK
+                        OR      A
+                        JP      Z,pricing_two_credits_either_player
+                        CP      $08
+                        JP      Z,pricing_two_or_four_credits
+                        CP      $01
+                        JP      Z,pricing_one_credit_either_player
+
+; DIP mask $09: one credit enables 1P; two or more enable 2P.
+pricing_one_or_two_credits:
+                        LD      A,(CREDIT_COUNT)
+                        CP      $01
+                        JR      NZ,enable_two_player_for_two_credits
+                        SET     1,(HL)
+                        RES     2,(HL)
+                        INC     HL
+                        LD      (HL),$01
+                        JP      select_prompt_one_player
+enable_two_player_for_two_credits:
+                        RES     1,(HL)
+                        SET     2,(HL)
+                        INC     HL
+                        LD      (HL),$02
+                        JP      select_prompt_two_player
+
+; DIP mask $01: one credit starts either station mode.
+pricing_one_credit_either_player:
+                        SET     1,(HL)
+                        SET     2,(HL)
+                        INC     HL
+                        LD      (HL),$01
+                        JP      select_prompt_either_player
+
+; DIP mask $00: two credits start either station mode.
+pricing_two_credits_either_player:
+                        LD      A,(CREDIT_COUNT)
+                        CP      $01
+                        JR      NZ,enable_either_player_for_two_credits
+                        JP      select_prompt_insert_one_more
+enable_either_player_for_two_credits:
+                        SET     1,(HL)
+                        SET     2,(HL)
+                        INC     HL
+                        LD      (HL),$02
+                        JP      select_prompt_two_credit_either
+
+; DIP mask $08: two credits start 1P and four credits start 2P.
+pricing_two_or_four_credits:
+                        LD      A,(CREDIT_COUNT)
+                        CP      $01
+                        JR      NZ,check_two_or_four_credit_count
+                        JP      select_prompt_need_credit_for_one_player
+check_two_or_four_credit_count:
+                        CP      $02
+                        JR      NZ,check_three_credit_count
+                        SET     1,(HL)
+                        RES     2,(HL)
+                        INC     HL
+                        LD      (HL),A
+                        JP      select_prompt_one_player_or_two_coins
+check_three_credit_count:
+                        CP      $03
+                        JR      NZ,enable_two_player_for_four_credits
+                        RES     1,(HL)
+                        RES     2,(HL)
+                        JP      select_prompt_one_more_for_two_player
+enable_two_player_for_four_credits:
+                        RES     1,(HL)
+                        SET     2,(HL)
+                        INC     HL
+                        LD      (HL),$04
+                        JP      select_prompt_four_credit_two_player
+
+; Translate the English pointer-list base to the selected language.  The nine
+; lists have identical layout in all three language blocks.
+select_prompt_one_player:
+                        LD      HL,ENGLISH_PROMPT_TABLE_0
+render_selected_prompt: CALL    READ_LANGUAGE_SELECTION
+                        LD      DE,$0000
+                        CP      LANGUAGE_ENGLISH
+                        JR      Z,prompt_language_offset_ready
+                        LD      DE,GERMAN_PROMPT_TABLE_OFFSET
+                        CP      LANGUAGE_GERMAN
+                        JR      Z,prompt_language_offset_ready
+                        LD      DE,FRENCH_PROMPT_TABLE_OFFSET
+prompt_language_offset_ready:
+                        ADD     HL,DE
+                        LD      DE,PROMPT_INITIAL_Y_WORD
+                        LD      (TEXT_Y_POSITION_LO),DE
+                        CALL    DRAW_PROMPT_POINTER_LIST
+                        JP      start_selection_loop
+
+select_prompt_two_player:
+                        LD      HL,ENGLISH_PROMPT_TABLE_1
+                        JR      render_selected_prompt
+select_prompt_either_player:
+                        LD      HL,ENGLISH_PROMPT_TABLE_2
+                        JR      render_selected_prompt
+select_prompt_insert_one_more:
+                        LD      HL,ENGLISH_PROMPT_TABLE_3
+                        JR      render_selected_prompt
+select_prompt_two_credit_either:
+                        LD      HL,ENGLISH_PROMPT_TABLE_4
+                        JR      render_selected_prompt
+select_prompt_need_credit_for_one_player:
+                        LD      HL,ENGLISH_PROMPT_TABLE_5
+                        JR      render_selected_prompt
+select_prompt_one_player_or_two_coins:
+                        LD      HL,ENGLISH_PROMPT_TABLE_6
+                        JR      render_selected_prompt
+select_prompt_one_more_for_two_player:
+                        LD      HL,ENGLISH_PROMPT_TABLE_7
+                        JR      render_selected_prompt
+select_prompt_four_credit_two_player:
+                        LD      HL,ENGLISH_PROMPT_TABLE_8
+                        JR      render_selected_prompt
 
 ;-------------------------------------------------------------------------------
 ; $0501: Render a zero-terminated list of text pointers
 ;-------------------------------------------------------------------------------
+; HL points to a sequence of text pointers terminated by $0000.  Every line is
+; drawn at X=$28; the 8.8 Y coordinate advances by $0C00 after each string.
 DRAW_PROMPT_POINTER_LIST:
-                        DB      $3E,$0C                 ; $0501  LD A,$0C
-                        DB      $32,$02,$C2             ; $0503  LD ($C202),A
-                        DB      $11,$00,$28             ; $0506  LD DE,$2800
-                        DB      $ED,$53,$FE,$C1         ; $0509  LD ($C1FE),DE
-                        DB      $5E                     ; $050D  LD E,(HL)
-                        DB      $23                     ; $050E  INC HL
-                        DB      $56                     ; $050F  LD D,(HL)
-                        DB      $23                     ; $0510  INC HL
-                        DB      $7B                     ; $0511  LD A,E
-                        DB      $B2                     ; $0512  OR D
-                        DB      $C8                     ; $0513  RET Z
-                        DB      $E5                     ; $0514  PUSH HL
-                        DB      $62                     ; $0515  LD H,D
-                        DB      $6B                     ; $0516  LD L,E
-                        DB      $CD,$E4,$15             ; $0517  CALL $15E4
-                        DB      $2A,$00,$C2             ; $051A  LD HL,($C200)
-                        DB      $11,$00,$0C             ; $051D  LD DE,$0C00
-                        DB      $19                     ; $0520  ADD HL,DE
-                        DB      $22,$00,$C2             ; $0521  LD ($C200),HL
-                        DB      $E1                     ; $0524  POP HL
-                        DB      $18,$DA                 ; $0525  JR $0501
+                        LD      A,PROMPT_TEXT_COLOR
+                        LD      (TEXT_COLOR),A
+                        LD      DE,PROMPT_TEXT_X_WORD
+                        LD      (TEXT_X_POSITION_LO),DE
+                        LD      E,(HL)
+                        INC     HL
+                        LD      D,(HL)
+                        INC     HL
+                        LD      A,E
+                        OR      D
+                        RET     Z
+                        PUSH    HL
+                        LD      H,D
+                        LD      L,E
+                        CALL    DRAW_TEXT
+                        LD      HL,(TEXT_Y_POSITION_LO)
+                        LD      DE,PROMPT_LINE_Y_STEP_WORD
+                        ADD     HL,DE
+                        LD      (TEXT_Y_POSITION_LO),HL
+                        POP     HL
+                        JR      DRAW_PROMPT_POINTER_LIST
 
 ;-------------------------------------------------------------------------------
 ; $0527: Decode the two language-select input bits
 ;-------------------------------------------------------------------------------
+; Port $12 bit 3 alone selects German.  Port $11 bit 6 selects French and has
+; priority when both bits are present.  No selected bit means English.
 READ_LANGUAGE_SELECTION:
-                        DB      $C5                     ; $0527  PUSH BC
-                        DB      $DB,$12                 ; $0528  IN A,($12)
-                        DB      $E6,$08                 ; $052A  AND $08
-                        DB      $47                     ; $052C  LD B,A
-                        DB      $DB,$11                 ; $052D  IN A,($11)
-                        DB      $E6,$40                 ; $052F  AND $40
-                        DB      $B0                     ; $0531  OR B
-                        DB      $06,$00                 ; $0532  LD B,$00
-                        DB      $28,$08                 ; $0534  JR Z,$053E
-                        DB      $06,$01                 ; $0536  LD B,$01
-                        DB      $FE,$08                 ; $0538  CP $08
-                        DB      $28,$02                 ; $053A  JR Z,$053E
-                        DB      $06,$02                 ; $053C  LD B,$02
-                        DB      $78                     ; $053E  LD A,B
-                        DB      $32,$05,$C2             ; $053F  LD (LANGUAGE_SELECTION),A
-                        DB      $C1                     ; $0542  POP BC
-                        DB      $C9                     ; $0543  RET
+                        PUSH    BC
+                        IN      A,(PORT_COIN_START)
+                        AND     LANGUAGE_COIN_PORT_MASK
+                        LD      B,A
+                        IN      A,(PORT_P1_HANDLE)
+                        AND     LANGUAGE_P1_PORT_MASK
+                        OR      B
+                        LD      B,LANGUAGE_ENGLISH
+                        JR      Z,language_selected
+                        LD      B,LANGUAGE_GERMAN
+                        CP      LANGUAGE_COIN_PORT_MASK
+                        JR      Z,language_selected
+                        LD      B,LANGUAGE_FRENCH
+language_selected:      LD      A,B
+                        LD      (LANGUAGE_SELECTION),A
+                        POP     BC
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $0544: Native ENTER followed by an inline TERSE control thread
@@ -1249,7 +1365,7 @@ control_no_state:       DW      TERSE_INLINE_BFETCH,$C1FB
                         DW      UPDATE_GAME_TIME_DISPLAY,ACTIVATE_TARGET_LANES,POLL_TORPEDO_FIRE
                         DW      TERSE_BRANCH,control_continue
 control_no_player:      DW      INITIALIZE_OBJECT_POOLS,UPDATE_NEW_HIGH_SCORE_MESSAGE
-                        DW      TERSE_INLINE_BFETCH,$C206
+                        DW      TERSE_INLINE_BFETCH,CREDIT_COUNT
                         DW      TERSE_ZERO_BRANCH,control_continue
                         DW      TERSE_TRUE
                         DW      TERSE_LIT,$C1DF
@@ -1336,19 +1452,19 @@ store_new_high_score_flag:
                         RST     $08
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_EN
-                        DB      $B4,$2C,$FF            ; Y, X, blocking
+                        DB      $B4,$2C,$FF            ; Y, X, double size
                         DW      TERSE_RETURN
 game_over_not_english:  CP      $01
                         JR      NZ,draw_game_over_french
                         RST     $08
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_DE
-                        DB      $B4,$2C,$FF            ; Y, X, blocking
+                        DB      $B4,$2C,$FF            ; Y, X, double size
                         DW      TERSE_RETURN
 draw_game_over_french:  RST     $08
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_FR
-                        DB      $B4,$2C,$FF            ; Y, X, blocking
+                        DB      $B4,$2C,$FF            ; Y, X, double size
                         DW      TERSE_RETURN
 
 ;-------------------------------------------------------------------------------
@@ -1508,7 +1624,7 @@ bonus_station_selected:
                         LD      A,BONUS_DISPLAY_DURATION
                         LD      (BC),A
                         LD      HL,TEXT_BONUS
-                        CALL    DRAW_TEXT_BLOCKING
+                        CALL    DRAW_TEXT_DOUBLE_SIZE
 
                         LD      A,E
                         CP      $E3
@@ -1841,14 +1957,14 @@ target_lane_y_ready:    LD      (IY+OBJECT_Y_POSITION_HI),A
 ; TARGET_TYPE_SEQUENCE supplies the six surface targets.  FREIGHTER_A entries
 ; can be replaced by the 1000-point Super Sub while its progression counter is
 ; below two and fewer than 24 BCD seconds remain.
-                        LD      HL,($C20B)
+                        LD      HL,(TARGET_TYPE_SEQUENCE_CURSOR)
                         LD      B,(HL)
                         INC     HL
                         LD      A,(HL)
                         CP      $FF
                         JR      NZ,target_sequence_ready
                         LD      HL,TARGET_TYPE_SEQUENCE
-target_sequence_ready:  LD      ($C20B),HL
+target_sequence_ready:  LD      (TARGET_TYPE_SEQUENCE_CURSOR),HL
                         LD      A,B
                         CP      OBJECT_TYPE_FREIGHTER_A
                         JR      NZ,target_type_ready
@@ -2202,7 +2318,7 @@ UPDATE_BONUS_DISPLAYS:
                         LD      HL,TEXT_BONUS
                         LD      A,(LEFT_BONUS_DISPLAY_ACTIVE)
                         OR      A
-                        CALL    NZ,DRAW_TEXT_BLOCKING
+                        CALL    NZ,DRAW_TEXT_DOUBLE_SIZE
 
                         LD      A,$78
                         LD      (TEXT_X_POSITION_HI),A
@@ -2211,7 +2327,7 @@ UPDATE_BONUS_DISPLAYS:
                         LD      HL,TEXT_BONUS
                         LD      A,(RIGHT_BONUS_DISPLAY_ACTIVE)
                         OR      A
-                        CALL    NZ,DRAW_TEXT_BLOCKING
+                        CALL    NZ,DRAW_TEXT_DOUBLE_SIZE
 
                         LD      A,$AB
                         LD      (TEXT_Y_POSITION),A
@@ -2347,22 +2463,22 @@ PULSE_COIN_COUNTER:
                         LD      A,(DE)
                         OR      A
                         JR      NZ,coin_counter_done
-                        LD      HL,$C207
+                        LD      HL,COIN_INPUT_QUEUE
                         LD      A,(HL)
                         OR      A
                         JR      Z,coin_counter_done
                         DEC     (HL)
                         LD      A,$0A
                         LD      (DE),A
-                        LD      HL,$C206
+                        LD      HL,CREDIT_COUNT
                         INC     (HL)
 coin_counter_done:      JP      (IY)
 
 ;-------------------------------------------------------------------------------
 ; $0C6E: TERSE text word with five inline operands
 ;-------------------------------------------------------------------------------
-; Inline layout: text pointer, Y high byte, X high byte, blocking flag.  A zero
-; flag uses the ordinary renderer; nonzero brackets it with TEXT_RENDER_LOCK.
+; Inline layout: text pointer, Y high byte, X high byte, size flag.  A zero
+; flag uses the ordinary renderer; nonzero selects the double-size renderer.
 TERSE_DRAW_TEXT_INLINE:
                         LD      A,(BC)
                         INC     BC
@@ -2386,11 +2502,11 @@ TERSE_DRAW_TEXT_INLINE:
                         INC     BC
                         OR      A
                         PUSH    BC
-                        JR      NZ,draw_inline_text_blocking
+                        JR      NZ,draw_inline_text_double_size
                         CALL    DRAW_TEXT
                         JR      inline_text_done
-draw_inline_text_blocking:
-                        CALL    DRAW_TEXT_BLOCKING
+draw_inline_text_double_size:
+                        CALL    DRAW_TEXT_DOUBLE_SIZE
 inline_text_done:       POP     BC
                         JP      (IY)
 
@@ -2490,13 +2606,13 @@ SHOW_SUPER_SUB_ANNOUNCEMENT:
                         LD      A,$0C
                         LD      (TEXT_COLOR),A
                         LD      HL,TEXT_SUPER
-                        CALL    DRAW_TEXT_BLOCKING
+                        CALL    DRAW_TEXT_DOUBLE_SIZE
                         LD      A,$44
                         LD      (TEXT_X_POSITION_HI),A
                         LD      A,$69
                         LD      (TEXT_Y_POSITION),A
                         LD      HL,TEXT_SUB
-                        CALL    DRAW_TEXT_BLOCKING
+                        CALL    DRAW_TEXT_DOUBLE_SIZE
                         LD      B,$40
 super_sub_message_hold: HALT
                         DJNZ    super_sub_message_hold
@@ -2721,13 +2837,18 @@ FONT_BITMAPS:
                         DB      $18,$18,$66,$66,$66,$66,$66,$66,$66,$66,$7E,$3C,$66,$66,$66,$66 ; $130F  ..ffffffff~<ffff
                         DB      $66,$7E,$3C,$3C,$18,$18,$C3,$C3,$C3,$DB,$DB,$DB,$FF,$E7,$C3,$C3 ; $131F  f~<<............
                         DB      $66,$66,$7E,$3C,$18,$18,$3C,$7E,$66,$66,$66,$66,$7E,$3C,$18,$18 ; $132F  ff~<..<~ffff~<..
-                        DB      $18,$18,$18,$18,$7E,$7E,$06,$0E,$1C,$38,$70,$60,$7E,$7E,$EB,$EE ; $133F  ....~~...8p`~~..
-                        DB      $00,$4A,$A8,$00,$4A,$AC,$00,$4A,$28,$00,$4A,$2E,$00             ; $134F  .J..J..J(.J..
+                        DB      $18,$18,$18,$18,$7E,$7E,$06,$0E,$1C,$38,$70,$60,$7E,$7E         ; $133F  ....~~...8p`~~
+
+;-------------------------------------------------------------------------------
+; $134D: Fixed center panel drawn between the two player stations
+;-------------------------------------------------------------------------------
+PLAYER_STATUS_CENTER_BITMAP:
+                        DB      $EB,$EE,$00,$4A,$A8,$00,$4A,$AC,$00,$4A,$28,$00,$4A,$2E,$00     ; $134D
 
 ;-------------------------------------------------------------------------------
 ; $135C: Small status graphics used by player display rendering
 ;-------------------------------------------------------------------------------
-PLAYER_STATUS_BITMAPS:
+PLAYER_STATUS_BITMAP:
                         DB      $EE,$EF,$70,$88,$A9,$40,$E8,$AF,$60,$28,$AA,$40,$EE,$E9,$70     ; $135C
 TEXT_BLANK_HIT_SCORE:
                         DB      $40,$40,$40,$40,$00                                             ; $136B
@@ -2877,11 +2998,11 @@ decay_frame_timer:      XOR     A
                         DEC     (HL)
 frame_timer_done:       INC     HL
                         DJNZ    decay_frame_timer
-                        LD      HL,$C1DA
+                        LD      HL,GAME_CLOCK_DIVIDER
                         XOR     A
                         CP      (HL)
                         JR      NZ,read_coin_input
-                        LD      (HL),$3C
+                        LD      (HL),GAME_CLOCK_DIVIDER_RELOAD
                         INC     HL
                         LD      A,(HL)
                         OR      A
@@ -2896,15 +3017,15 @@ coin_input_stable:      IN      A,(PORT_COIN_START)
                         CP      B
                         JR      NZ,coin_input_stable
                         AND     $01
-                        LD      HL,$C1F9
+                        LD      HL,COIN_INPUT_EDGE_LATCH
                         PUSH    AF
                         XOR     (HL)
                         JR      Z,save_coin_input
                         AND     (HL)
                         JR      Z,save_coin_input
-                        LD      A,($C207)
+                        LD      A,(COIN_INPUT_QUEUE)
                         INC     A
-                        LD      ($C207),A
+                        LD      (COIN_INPUT_QUEUE),A
 save_coin_input:        POP     AF
                         LD      (HL),A
                         POP     IY
@@ -3189,64 +3310,225 @@ draw_mine_object:       CALL    SELECT_OBJECT_BITMAP
                         CALL    DRAW_OBJECT_BITMAP
                         RET
 
-; Set the renderer lock around text that must not be interleaved with the
-; interrupt-driven display path.
-DRAW_TEXT_BLOCKING:     LD      A,$01
-                        LD      (TEXT_RENDER_LOCK),A
+; Select the double-width/double-height glyph path for one complete string.
+DRAW_TEXT_DOUBLE_SIZE:  LD      A,$01
+                        LD      (TEXT_DOUBLE_SIZE_FLAG),A
                         CALL    DRAW_TEXT
                         XOR     A
-                        LD      (TEXT_RENDER_LOCK),A
+                        LD      (TEXT_DOUBLE_SIZE_FLAG),A
                         RET
 
 ;-------------------------------------------------------------------------------
 ; $15E4: Draw a zero-terminated text string
 ;-------------------------------------------------------------------------------
+; HL addresses character codes.  The font begins at ASCII $30; code $40 is the
+; blank used in all ROM strings.  BC and DE are preserved across the string.
 DRAW_TEXT:
-                        DB      $C5,$D5,$7E,$B7,$28,$08,$E5,$CD,$F5,$15,$E1,$23,$18,$F4,$D1,$C1 ; $15E4  ..~.(......#....
-                        DB      $C9                                                             ; $15F4  .
+                        PUSH    BC
+                        PUSH    DE
+draw_next_character:    LD      A,(HL)
+                        OR      A
+                        JR      Z,text_string_complete
+                        PUSH    HL
+                        CALL    DRAW_CHARACTER
+                        POP     HL
+                        INC     HL
+                        JR      draw_next_character
+text_string_complete:   POP     DE
+                        POP     BC
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $15F5: Map a character code to its ten-byte font bitmap
 ;-------------------------------------------------------------------------------
 DRAW_CHARACTER:
-                        DB      $D6,$30,$6F,$26,$00,$29,$E5,$29,$29,$D1,$19,$11,$9F,$11,$19,$E5 ; $15F5  .0o&.).)).......
-                        DB      $ED,$5B,$00,$C2,$2A,$FE,$C1,$CD,$51,$19,$D1,$CD,$DF,$16         ; $1605  .[..*...Q.....
+                        SUB     FONT_ASCII_BASE
+                        LD      L,A
+                        LD      H,$00
+                        ADD     HL,HL                  ; 2 * character index
+                        PUSH    HL
+                        ADD     HL,HL
+                        ADD     HL,HL                  ; 8 * character index
+                        POP     DE
+                        ADD     HL,DE                  ; 10 * character index
+                        LD      DE,FONT_BITMAPS
+                        ADD     HL,DE
+                        PUSH    HL                     ; font source
+
+                        LD      DE,(TEXT_Y_POSITION_LO)
+                        LD      HL,(TEXT_X_POSITION_LO)
+                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        POP     DE                     ; font source
+
+; Supply a blank row immediately above the glyph.  The helper returns HL at
+; the following video row, which is the first bitmap destination.
+                        CALL    CLEAR_CHARACTER_ROW
+                        ; fall through
 
 ;-------------------------------------------------------------------------------
 ; $1613: Render a ten-row character bitmap
 ;-------------------------------------------------------------------------------
 DRAW_CHARACTER_ROWS:
-                        DB      $06,$0A,$3A,$DD,$C1,$B7,$20,$28,$E5,$3A,$02,$C2,$F3,$D3,$19,$3E ; $1613  ..:... (.:.....>
-                        DB      $08,$D3,$0C,$1A,$77,$23,$77,$FB,$E1,$D5,$11,$50,$00,$19,$D1,$13 ; $1623  ....w#w....P....
-                        DB      $10,$E6,$CD,$DF,$16,$2A,$FE,$C1,$11,$00,$04,$19,$22,$FE,$C1,$C9 ; $1633  .....*......"...
-                        DB      $E5,$3E,$0C,$F3,$D3,$19,$3E,$08,$D3,$0C,$1A,$32,$FE,$3F,$FB,$32 ; $1643  .>....>....2.?.2
-                        DB      $FF,$3F,$3A,$02,$C2,$F3,$D3,$19,$3E,$18,$D3,$0C,$3A,$FE,$7F,$77 ; $1653  .?:.....>...:..w
-                        DB      $23,$77,$3A,$FF,$7F,$23,$77,$23,$FB,$77,$E1,$D5,$11,$A0,$00,$19 ; $1663  #w:..#w#.w......
-                        DB      $D1,$13,$10,$CC,$2A,$FE,$C1,$11,$00,$08,$19,$22,$FE,$C1,$C9     ; $1673  ....*......"...
+                        LD      B,FONT_BYTES_PER_GLYPH
+                        LD      A,(TEXT_DOUBLE_SIZE_FLAG)
+                        OR      A
+                        JR      NZ,draw_double_size_character_row
+
+; Normal glyph: duplicate each source byte into two adjacent Magic-RAM bytes,
+; advance one $50-byte video row per source row, then add a lower blank row.
+draw_normal_character_row:
+                        PUSH    HL
+                        LD      A,(TEXT_COLOR)
+                        DI
+                        OUT     (PORT_MAGIC_EXPAND),A
+                        LD      A,MAGIC_MODE_TEXT_NORMAL
+                        OUT     (PORT_MAGIC_CONTROL),A
+                        LD      A,(DE)
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),A
+                        EI
+                        POP     HL
+                        PUSH    DE
+                        LD      DE,VIDEO_ROW_STRIDE
+                        ADD     HL,DE
+                        POP     DE
+                        INC     DE
+                        DJNZ    draw_normal_character_row
+                        CALL    CLEAR_CHARACTER_ROW
+                        LD      HL,(TEXT_X_POSITION_LO)
+                        LD      DE,TEXT_NORMAL_X_ADVANCE
+                        ADD     HL,DE
+                        LD      (TEXT_X_POSITION_LO),HL
+                        RET
+
+; Double-size glyph: first expand one font byte through the Magic-RAM scratch
+; pair, then duplicate both expanded bytes into four destination bytes.  A
+; $00A0 stride doubles vertical spacing; X advances by eight coordinate units.
+draw_double_size_character_row:
+                        PUSH    HL
+                        LD      A,MAGIC_EXPAND_DEFAULT
+                        DI
+                        OUT     (PORT_MAGIC_EXPAND),A
+                        LD      A,MAGIC_MODE_TEXT_NORMAL
+                        OUT     (PORT_MAGIC_CONTROL),A
+                        LD      A,(DE)
+                        LD      (MAGIC_SCRATCH_WRITE_0),A
+                        EI
+                        LD      (MAGIC_SCRATCH_WRITE_1),A
+
+                        LD      A,(TEXT_COLOR)
+                        DI
+                        OUT     (PORT_MAGIC_EXPAND),A
+                        LD      A,MAGIC_MODE_TEXT_DOUBLE
+                        OUT     (PORT_MAGIC_CONTROL),A
+                        LD      A,(MAGIC_SCRATCH_READ_0)
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),A
+                        LD      A,(MAGIC_SCRATCH_READ_1)
+                        INC     HL
+                        LD      (HL),A
+                        INC     HL
+                        EI
+                        LD      (HL),A
+                        POP     HL
+                        PUSH    DE
+                        LD      DE,TEXT_DOUBLE_ROW_STRIDE
+                        ADD     HL,DE
+                        POP     DE
+                        INC     DE
+                        DJNZ    draw_double_size_character_row
+                        LD      HL,(TEXT_X_POSITION_LO)
+                        LD      DE,TEXT_DOUBLE_X_ADVANCE
+                        ADD     HL,DE
+                        LD      (TEXT_X_POSITION_LO),HL
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $1682: Draw player-specific status graphics
 ;-------------------------------------------------------------------------------
+; With two players, identical 15-byte station panels are drawn at X=$07 and
+; X=$82.  One-player mode omits the left panel.  Both modes draw the fixed
+; center panel at X=$4D.  All three start at Y=$B8.
 DRAW_PLAYER_STATUS:
-                        DB      $3A,$FB,$C1,$B7,$C8,$FE,$02,$20,$10,$06,$00,$16,$B8,$21,$00,$07 ; $1682  :...... .....!..
-                        DB      $CD,$51,$19,$11,$5C,$13,$CD,$BC,$16,$06,$00,$16,$B8,$21,$00,$82 ; $1692  .Q..\........!..
-                        DB      $CD,$51,$19,$11,$5C,$13,$CD,$BC,$16,$06,$00,$16,$B8,$21,$00,$4D ; $16A2  .Q..\........!.M
-                        DB      $CD,$51,$19,$11,$4D,$13,$CD,$BC,$16,$C9                         ; $16B2  .Q..M.....
+                        LD      A,(ACTIVE_PLAYER_COUNT)
+                        OR      A
+                        RET     Z
+                        CP      $02
+                        JR      NZ,draw_right_status_panel
+                        LD      B,$00
+                        LD      D,PLAYER_STATUS_Y
+                        LD      HL,PLAYER_STATUS_LEFT_X_WORD
+                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        LD      DE,PLAYER_STATUS_BITMAP
+                        CALL    DRAW_SMALL_BITMAP
+draw_right_status_panel:
+                        LD      B,$00
+                        LD      D,PLAYER_STATUS_Y
+                        LD      HL,PLAYER_STATUS_RIGHT_X_WORD
+                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        LD      DE,PLAYER_STATUS_BITMAP
+                        CALL    DRAW_SMALL_BITMAP
+                        LD      B,$00
+                        LD      D,PLAYER_STATUS_Y
+                        LD      HL,PLAYER_STATUS_CENTER_X_WORD
+                        CALL    MAP_OBJECT_COORDINATES_TO_VRAM
+                        LD      DE,PLAYER_STATUS_CENTER_BITMAP
+                        CALL    DRAW_SMALL_BITMAP
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $16BC: Render a compact bitmap through Magic RAM
 ;-------------------------------------------------------------------------------
+; DE addresses five rows of three source bytes.  Each byte is duplicated into
+; two destination bytes, producing six written bytes per row.
 DRAW_SMALL_BITMAP:
-                        DB      $0E,$05,$E5,$3E,$0C,$F3,$D3,$19,$3E,$08,$D3,$0C,$06,$03,$1A,$77 ; $16BC  ...>....>......w
-                        DB      $23,$77,$23,$13,$10,$F8,$FB,$E1,$7D,$C6,$50,$6F,$30,$01,$24,$0D ; $16CC  #w#.....}.Po0.$.
-                        DB      $20,$E0,$C9                                                     ; $16DC   ..
+                        LD      C,PLAYER_STATUS_ROWS
+draw_small_bitmap_row:  PUSH    HL
+                        LD      A,PLAYER_STATUS_COLOR
+                        DI
+                        OUT     (PORT_MAGIC_EXPAND),A
+                        LD      A,MAGIC_MODE_TEXT_NORMAL
+                        OUT     (PORT_MAGIC_CONTROL),A
+                        LD      B,PLAYER_STATUS_SOURCE_WIDTH
+draw_small_bitmap_byte: LD      A,(DE)
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),A
+                        INC     HL
+                        INC     DE
+                        DJNZ    draw_small_bitmap_byte
+                        EI
+                        POP     HL
+                        LD      A,L
+                        ADD     A,$50
+                        LD      L,A
+                        JR      NC,small_bitmap_row_ready
+                        INC     H
+small_bitmap_row_ready: DEC     C
+                        JR      NZ,draw_small_bitmap_row
+                        RET
 
 ;-------------------------------------------------------------------------------
-; $16DF: Clear the current character cell rows
+; $16DF: Clear one two-byte character row and advance to the next video row
 ;-------------------------------------------------------------------------------
-CLEAR_CHARACTER_ROWS:
-                        DB      $E5,$3A,$02,$C2,$F3,$D3,$19,$3E,$08,$D3,$0C,$AF,$77,$23,$77,$FB ; $16DF  .:.....>....w#w.
-                        DB      $E1,$01,$50,$00,$09,$C9 ; $16EF
+CLEAR_CHARACTER_ROW:
+                        PUSH    HL
+                        LD      A,(TEXT_COLOR)
+                        DI
+                        OUT     (PORT_MAGIC_EXPAND),A
+                        LD      A,MAGIC_MODE_TEXT_NORMAL
+                        OUT     (PORT_MAGIC_CONTROL),A
+                        XOR     A
+                        LD      (HL),A
+                        INC     HL
+                        LD      (HL),A
+                        EI
+                        POP     HL
+                        LD      BC,VIDEO_ROW_STRIDE
+                        ADD     HL,BC
+                        RET
 
 ;-------------------------------------------------------------------------------
 ; $16F5: Advance a round-robin scheduler cursor to one object record
