@@ -35,9 +35,13 @@ not describe that structure correctly.
 - The frame interrupt's discrete-sound output, timer decay, torpedo producers,
   collision producers, sonar sequence, dive effect, and coin-counter pulse are
   labeled and documented.
+- Collision geometry, station ownership, packed-BCD scoring, four-hit bonuses,
+  hit overlays, explosion timing, extended patrol, final-score/high-score
+  selection, and localized high-score indication are fully traced.
 - The remaining `DB` regions are inventoried by address and type. They contain
-  1,105 bytes of native Z80 awaiting promotion, 22 bytes of TERSE, verified
-  tables and graphics, ROM fill, and one uncertain byte at `$1385`.
+  718 bytes of native Z80 awaiting promotion, 31 bytes of TERSE stream/inline
+  operands, verified tables and graphics, ROM fill, and one uncertain byte at
+  `$1385`.
 
 ## ROM organization
 
@@ -146,9 +150,9 @@ two-record lanes:
 
 A ship collision deactivates the torpedo, marks the target for hit animation
 and foreground scoring, records station ownership in target flag bit 3, copies
-the torpedo color to the target, and starts `shiphit` for `$40` frames. A mine
+the torpedo color to the target, and loads the `shiphit` timer with `$40`. A mine
 collision deactivates the torpedo, marks the mine for hit animation, clears the
-station's consecutive-ship-hit streak, and starts `minehit` for `$08` frames.
+station's consecutive-ship-hit streak, and loads `minehit` with `$08`.
 A boundary miss also clears the streak before the torpedo is erased and made
 inactive.
 
@@ -170,14 +174,16 @@ hit streak. Four consecutive ship hits add their accumulated BCD value to the
 score a second time, reset the streak, and display `BONUS` plus the awarded
 value for `$78` frames.
 
-Target explosion frames advance every six target visits: 12 video frames, or
-about 0.2 seconds. Warship A/C use six hit frames; Warship B and both freighters
-use five; the PT Boat uses three. The score overlay is erased on animation frame
-3. The zero pointer ending each bitmap list clears `ACTIVE` and leaves
-`OBJECT_TIMER=$2D`; that timer does not gate target allocation.
+Target explosion frames advance on the seventh target visit after loading
+`OBJECT_TIMER=$06`: 14 video frames, about 0.233 seconds. Warship A/C use six
+hit frames; Warship B and both freighters use five; the PT Boat uses three. The
+score overlay is erased when ordinary targets reach animation frame 3. The zero
+pointer ending each bitmap list clears `ACTIVE` and leaves `OBJECT_TIMER=$2D`;
+that timer does not gate target allocation.
 
 The PT Boat follows the same movement, collision, score, and retirement path.
-Its constructor additionally starts the ten-ping alternating sonar sequence.
+Its constructor additionally asserts one left sonar pulse and starts ten
+scheduled sonar pulses.
 
 ### Mine
 
@@ -208,8 +214,124 @@ target visits. At 30 Hz this is 84 video frames, about 1.4 seconds per step;
 dive frame 2 persists until exit or collision. A hit skips directly to
 explosion frame 3, awards 1000 points, and removes the score overlay on frame 5.
 
-This pass promoted the lifecycle support code at `$06B5-$0734`,
-`$0B4C-$0BDE`, `$0C6E-$0D47`, and `$15D7-$15E3` from raw bytes to labeled Z80.
+The lifecycle and collision/scoring passes promoted `$0593-$07FB`,
+`$0B4C-$0C55`, `$0C6E-$0D47`, and `$15D7-$15E3` where those ranges are native
+code. Inline TERSE operands inside the promoted regions remain explicit data.
+
+## Collision, scoring, explosions, and patrol completion
+
+### Collision resolver
+
+`UPDATE_TORPEDO_OBJECT` first performs a cheap Magic-RAM probe relative to the
+torpedo's previous draw address. It reads offsets `$3F60`, `$3F61`, `$3FB0`,
+`$3FB1`, `$40A0`, `$40F0`, and `$4140`. Any nonzero bit in the first four bytes
+passes the probe; the last three contribute only color bits 6-7.
+
+The probe gates the exact record test:
+
+| Test | Verified condition |
+| --- | --- |
+| Vertical band | Torpedo Y selects one of the five two-record lane pools; no second Y test is made |
+| Active state | Candidate flag bit 7 is set |
+| Horizontal span | `delta = torpedo_x + 4 - candidate_x`; accept `0 <= delta < 4 * (bitmap_width + 1)` |
+| Hit state | Candidate flag bit 6 is clear |
+
+On acceptance, the resolver clears the candidate timer, sets hit-animation bit
+6 and foreground-event bit 5, and deactivates the torpedo. Even low bytes of the
+interleaved torpedo record addresses belong to the left station; odd low bytes
+belong to the right. Candidate flag bit 3 preserves that ownership for scoring,
+lamp restoration, and sound selection.
+
+### Scoring and overlays
+
+Station scores are two-byte packed BCD values in 100-point units. Target type
+IDs are ordered so `PROCESS_SHIP_HIT` can select the increment with three
+comparisons:
+
+| Target class | Stored increment | Displayed points |
+| --- | ---: | ---: |
+| Warship A/B/C | `$03` | 300 |
+| Freighter A/B | `$01` | 100 |
+| PT Boat | `$05` | 500 |
+| Super Sub | `$10` | 1000 |
+
+Foreground event bit 5 is consumed once. The routine adds the increment with
+`DAA`, clears the station's active-low score-redraw latch, asserts lamp bit 5,
+increments the consecutive-hit count, and adds the same value to the streak
+accumulator. A miss or mine collision clears both streak bytes.
+
+On the fourth consecutive ship hit, the complete streak value is added to the
+score a second time. The count and accumulator reset, and `BONUS` plus the BCD
+award remain active for `$78` video frames, exactly two seconds at 60 Hz.
+
+Each ship hit also draws its value beside the target. Ordinary overlays are
+erased at animation frame 3; the Super Sub overlay is erased at frame 5. That
+same cleanup restores the saved ready/reload lamp state for the owning station.
+
+### Explosion state
+
+| Object | Hit sequence | Advance cadence | Retirement |
+| --- | --- | --- | --- |
+| Warship A/C | 6 hit frames | Every 7 target visits = 14 video frames | Zero pointer clears `ACTIVE` |
+| Warship B, Freighter A/B | 5 hit frames | Every 7 target visits = 14 video frames | Zero pointer clears `ACTIVE` |
+| PT Boat | 3 hit frames | Every 7 target visits = 14 video frames | Zero pointer clears `ACTIVE` |
+| Super Sub | Frames 3-5 | Every 7 target visits = 14 video frames | Zero pointer clears `ACTIVE` |
+| Mine | 1 hit frame | Consecutive 10 Hz mine visits | Next visit reaches the zero pointer |
+
+`DECAY_OBJECT_TIMER` returns the timer value observed before decrementing it.
+The `$06` load therefore reaches zero on six visits and advances on the seventh.
+Explosion drawing and score cleanup do not retrigger the collision sound.
+
+### Sound-event timing
+
+The frame interrupt writes ports `$40/$41` before object service, then decays
+all timers. This ordering changes collision-event duration by one output write:
+
+| Event | Producer load | Result |
+| --- | ---: | --- |
+| Left/right torpedo | `$38` | 56 asserted port writes |
+| Left/right ship hit | `$40` | 63 asserted port writes |
+| Left/right mine hit | `$08` | 7 asserted port writes |
+| Initial PT Boat sonar | `$05` | 5 asserted port writes |
+| Scheduled sonar pulse | `$04` | 4 asserted port writes |
+| Super Sub dive field | `$F0` | 240 frame updates of trigger/pan state |
+
+Torpedo, sonar, and dive producers run in the foreground between interrupts and
+retain their full loads. Ship/mine timers are created during interrupt-driven
+torpedo service, after the current output write, and are immediately decremented.
+The PT Boat emits one immediate left pulse and seeds ten scheduled pulses. Dive
+timer bits 7-5 become the three-bit pan field; timer bit 5 also drives trigger
+bit 3, and `$C1FA` selects the sweep orientation. Scoring, four-hit bonuses,
+explosion frames, and object retirement have no separate sound producer.
+
+### Patrol completion and high score
+
+`GAME_TIME_BCD` decrements once per 60 video frames. At zero,
+`PATROL_COMPLETE_FLAG` stops new target and torpedo creation. Unless an
+extension clears the flag, the foreground continues collision, scoring,
+explosion, sound, and score-redraw service until all eight torpedoes are
+inactive.
+
+An extended patrol can be awarded once. DIP bits 4-5 select no extension or a
+5000/6000/7000-point threshold; either station can qualify. DIP bits 1-2 select
+the packed-BCD extension time:
+
+| DIP mask | One player | Two players |
+| ---: | ---: | ---: |
+| `$00` | 35 seconds | 45 seconds |
+| `$02` | 30 seconds | 35 seconds |
+| `$04` | 25 seconds | 30 seconds |
+| `$06` | 20 seconds | 20 seconds |
+
+The awarded duration is stored in `EXTENDED_PATROL_TIME_BCD`, preventing a
+second extension, and the Super Sub spawn counter resets for the new patrol.
+If no extension is awarded, both lamp ports and magazines are cleared; control
+returns to the outer game loop only after the active-torpedo drain completes.
+
+At game over, the larger station score becomes the high-score candidate; a tie
+selects the left station. The stored high score changes only when the candidate
+is strictly greater. A new record sets `NEW_HIGH_SCORE_FLAG`, and the localized
+congratulations message toggles draw/erase color every `$1E` video frames.
 
 ## TERSE
 
@@ -327,10 +449,10 @@ The source follows each producer back to its gameplay event:
   input creates a torpedo object.
 - `TRIGGER_SHIP_OR_MINE_HIT_SOUND` selects the cabinet side and collision type,
   then writes the matching ship-hit or mine-hit timer.
-- `START_SONAR_SEQUENCE` and `UPDATE_SONAR_SEQUENCE` generate the alternating
-  left/right sonar pulses.
-- `START_DIVE_SOUND` loads the dive countdown used for the trigger and pan
-  field.
+- `START_SONAR_SEQUENCE` asserts the initial left pulse and seeds ten scheduled
+  pulses; `UPDATE_SONAR_SEQUENCE` generates the subsequent side sequence.
+- `START_DIVE_SOUND` loads the `$F0` countdown and the orientation XOR used for
+  the trigger and three-bit pan field.
 - `PULSE_COIN_COUNTER` handles `$C1D6`, which shares the timer block but drives
   the mechanical coin counter rather than audio.
 - `UPDATE_DISCRETE_SOUND` packs the timers and writes ports `$40` and `$41`.
