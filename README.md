@@ -24,6 +24,8 @@ not describe that structure correctly.
 - The 25-byte object-record ABI, all three scheduler pools, object selection,
   fixed-point movement, rendering, and the target/torpedo/mine handlers are
   reconstructed as native Z80.
+- All nine object type IDs, their target classes, speeds, scores, bitmap lists,
+  hit animations, collision lanes, and torpedo perspective frames are mapped.
 - Both six-entry raster schedules, their IM 2 vector selection, the primary and
   alternate interrupt handlers, and the four moving split-line states are fully
   decoded.
@@ -47,6 +49,55 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
+
+## Object types
+
+`OBJECT_TYPE` is byte 1 of every 25-byte object record. The complete type map
+is:
+
+Class names and displayed values follow Midway's
+[1978 sales flyer](https://flyers.arcade-museum.com/videogames/show/905). The
+ROM's BCD score decoder matches those values.
+
+| ID | Source label | Live bitmap | Size | X motion per update | Score |
+| ---: | --- | ---: | ---: | ---: | ---: |
+| `$00` | `OBJECT_TYPE_WARSHIP_A` | `$0E3F` | 20x12 | 1.0 pixel | 300 |
+| `$01` | `OBJECT_TYPE_WARSHIP_B` | `$0E7D` | 16x11 | 1.0 pixel | 300 |
+| `$02` | `OBJECT_TYPE_WARSHIP_C` | `$0EAB` | 20x10 | 1.0 pixel | 300 |
+| `$03` | `OBJECT_TYPE_FREIGHTER_A` | `$0EDF` | 16x10 | 0.5 pixel | 100 |
+| `$04` | `OBJECT_TYPE_FREIGHTER_B` | `$0F09` | 16x9 | 0.5 pixel | 100 |
+| `$05` | `OBJECT_TYPE_PT_BOAT` | `$0F2F` | 12x5 | 2.0 pixels | 500 |
+| `$06` | `OBJECT_TYPE_MINE` | `$117B` | 4x16 | 0.5 pixel | none |
+| `$07` | `OBJECT_TYPE_TORPEDO` | `$112D` | 4x21 near | trajectory table | none |
+| `$08` | `OBJECT_TYPE_SUPER_SUB` | `$0F40` | 16x9 surfaced | 1.0 pixel | 1000 |
+
+The A/B/C suffixes identify distinct ROM silhouettes within Midway's named
+Warship and Freighter classes. They do not assign unsupported real-world vessel
+classes.
+
+`PROCESS_SHIP_HIT` scans only the four target records at `$C000-$C04B`. A mine
+collision stops the torpedo and triggers `minehit`; it does not add score.
+The PT Boat starts the sonar sequence; the Super Sub starts the dive effect.
+
+The table ranges are fully structured:
+
+- `$0DC8-$0DD1` cycles through all five surface-ship silhouettes and two PT
+  Boat slots. Only a `FREIGHTER_A` slot can become the Super Sub.
+- `$0DD2-$0DDA` supplies the per-type horizontal speed. Mine and torpedo entries
+  are zero because their constructors set velocity separately.
+- `$0DDB-$0E3E` contains complete initial records for an upper-lane Warship A,
+  lower-lane Super Sub, left torpedo, and right torpedo.
+- `$1A53-$1AC2` contains the nine bitmap sequences. Warships, freighters, and
+  the PT Boat share size-appropriate hit-animation tails.
+- `$1AC3-$1AD4` maps every type ID to its bitmap sequence.
+- `$1AD5-$1AE3` maps torpedo Y to two target lanes and three mine lanes.
+- `$1AE4-$1AE6` selects near, middle, and far torpedo perspective frames.
+
+The normal target constructor promotes a `FREIGHTER_A` slot to the Super Sub
+only when fewer than 24 BCD seconds remain and the `$C1F7` counter is below two.
+It displays `SUPER` / `SUB`, starts the dive sound, advances through two dive
+frames every 42 target updates, and skips directly to its explosion sequence
+when hit.
 
 ## TERSE
 

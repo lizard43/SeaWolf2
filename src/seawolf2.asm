@@ -11,9 +11,9 @@
 ; Remaining raw-region inventory
 ;
 ; Every byte still emitted with DB is classified below.  The inventory covers
-; 4,517 bytes in 35 address spans; no DB byte is omitted.  Native and TERSE
-; spans are conversion work.  Table, graphics/text and padding spans are true
-; data and should remain data, although their internal labels can still improve.
+; 4,377 bytes in 35 classified address regions; no DB byte is omitted.  Native
+; and TERSE spans are conversion work.  Table, graphics/text, and padding
+; regions are true data, although their internal labels can still improve.
 ;
 ; NATIVE Z80 AWAITING PROMOTION                 14 spans / 1,611 bytes
 ;   $0302-$0320  work/video clear primitive
@@ -28,14 +28,14 @@
 ;   $0735-$07FB  extended-play, lamp and timer-display handling
 ;   $0B4C-$0BDE  post-hit status and expired-score clearing
 ;   $0C1A-$0C55  congratulations state and display
-;   $0C6E-$0D47  text/BCD primitives and diving-target presentation
+;   $0C6E-$0D47  text/BCD primitives and Super Sub presentation
 ;   $15D7-$16F4  native text and small-bitmap renderer
 ;
 ; TERSE INTERPRETER PROGRAM                     1 span / 22 bytes
 ;   $036F-$0384  MAIN_INITIALIZATION_THREAD inline cells and operands
 ;   Other TERSE programs are already expressed as labeled DW cells.
 ;
-; LOOKUP / PROPERTY / POINTER TABLES             9 spans / 490 DB bytes
+; LOOKUP / PROPERTY / POINTER TABLES             9 spans / 350 DB bytes
 ;   $0184-$0185  video-RAM diagnostic range parameters
 ;   $0199-$019A  work-RAM diagnostic range parameters
 ;   $0355-$0364  initial RAM template copied to $C212
@@ -44,14 +44,14 @@
 ;   $0DD2-$0DDA  target horizontal-speed table
 ;   $0DDB-$0E3E  four complete 25-byte object templates
 ;   $19D8-$1A52  decoded raster-schedule scalar fields; pointers use DW
-;   $1A53-$1AE6  bitmap pointers, collision lanes and frame thresholds
+;   $1A53-$1AE6  pointers use DW; collision/frame thresholds retain 8 DB bytes
 ;
 ; GRAPHICS, TEXT OR DIAGNOSTIC PATTERN DATA       9 spans / 2,317 bytes
 ;   $00B0-$00E7  self-test color/pixel patterns
 ;   $0E3F-$119E  object and animation bitmaps
 ;   $119F-$135B  character font
 ;   $135C-$136F  player-status graphics
-;   $1370-$1384  title and diving-target labels
+;   $1370-$1384  title and Super Sub labels
 ;   $1AE7-$1B58  short game-state messages
 ;   $1BC3-$1C72  English prompt text
 ;   $1CDD-$1E91  German prompt text
@@ -63,7 +63,7 @@
 ; GENUINELY UNCERTAIN                            1 span / 1 byte
 ;   $1385        unreferenced $8E between TEXT_SUB and the $1386 ISR entry
 ;
-; Inventory invariant: remaining DB byte count = 4,517.
+; Inventory invariant: remaining DB byte count = 4,377.
 ;===============================================================================
 
 PORT_COLOR_0            EQU     $00
@@ -170,17 +170,76 @@ OBJECT_FLAG_HIT_PENDING     EQU $20            ; bit 5
 OBJECT_FLAG_HIT_ANIMATION   EQU $40            ; bit 6
 OBJECT_FLAG_ACTIVE          EQU $80            ; bit 7
 
-OBJECT_TYPE_MINE            EQU $06
-OBJECT_TYPE_TORPEDO         EQU $07
-OBJECT_TYPE_DIVE_TARGET     EQU $08
+; Surface-target IDs $00-$05 are ordered by scoring class.  The 1978 Midway
+; flyer names the visible target classes; bitmap dimensions distinguish the ROM
+; variants.  Mine and torpedo records are not traversed by PROCESS_SHIP_HIT.
+OBJECT_TYPE_WARSHIP_A       EQU $00            ; 20x12, 300 points
+OBJECT_TYPE_WARSHIP_B       EQU $01            ; 16x11, 300 points
+OBJECT_TYPE_WARSHIP_C       EQU $02            ; 20x10, 300 points
+OBJECT_TYPE_FREIGHTER_A     EQU $03            ; 16x10, 100 points
+OBJECT_TYPE_FREIGHTER_B     EQU $04            ; 16x9,  100 points
+OBJECT_TYPE_PT_BOAT         EQU $05            ; 12x5,  500 points
+OBJECT_TYPE_MINE            EQU $06            ; 4x16 blocking object
+OBJECT_TYPE_TORPEDO         EQU $07            ; three perspective frames
+OBJECT_TYPE_SUPER_SUB       EQU $08            ; 16x9, 1000 points
+
+SCORE_FREIGHTER_BCD         EQU $01
+SCORE_WARSHIP_BCD           EQU $03
+SCORE_PT_BOAT_BCD           EQU $05
+SCORE_SUPER_SUB_BCD         EQU $10
+
+; Raw X-speed bytes are multiplied by four by ACTIVATE_TARGET_IN_LANE to form
+; signed 8.8 velocities.  These become $0080, $0100 and $0200 per update.
+TARGET_SPEED_SLOW_RAW       EQU $20
+TARGET_SPEED_MEDIUM_RAW     EQU $40
+TARGET_SPEED_FAST_RAW       EQU $80
+
+; Bitmap descriptors and shared hit-animation frames referenced by the lists
+; at $1A53-$1AC2.  Each descriptor begins with byte width and row count.
+BITMAP_WARSHIP_A            EQU $0E3F
+BITMAP_WARSHIP_B            EQU $0E7D
+BITMAP_WARSHIP_C            EQU $0EAB
+BITMAP_FREIGHTER_A          EQU $0EDF
+BITMAP_FREIGHTER_B          EQU $0F09
+BITMAP_PT_BOAT              EQU $0F2F
+BITMAP_SUPER_SUB_SURFACED   EQU $0F40
+BITMAP_SUPER_SUB_DIVE_1     EQU $0F66
+BITMAP_SUPER_SUB_DIVE_2     EQU $0F88
+BITMAP_LARGE_HIT_FRAME_2    EQU $0FA2
+BITMAP_LARGE_HIT_FRAME_3    EQU $0FE0
+BITMAP_LARGE_HIT_FRAME_4    EQU $100A
+BITMAP_LARGE_HIT_FRAME_5    EQU $1028
+BITMAP_LARGE_HIT_FRAME_6    EQU $103A
+BITMAP_MEDIUM_HIT_FRAME_2   EQU $105E
+BITMAP_MEDIUM_HIT_FRAME_3   EQU $1072
+BITMAP_SMALL_HIT_FRAME_2    EQU $1080
+BITMAP_SMALL_HIT_FRAME_3    EQU $108A
+BITMAP_SMALL_HIT_FRAME_1    EQU $10B0
+BITMAP_MEDIUM_HIT_FRAME_1   EQU $10C1
+BITMAP_LARGE_HIT_FRAME_1    EQU $10EF
+BITMAP_TORPEDO_NEAR         EQU $112D
+BITMAP_TORPEDO_MIDDLE       EQU $1147
+BITMAP_TORPEDO_FAR          EQU $1162
+BITMAP_MINE                 EQU $117B
+BITMAP_MINE_HIT             EQU $118D
 
 ; Scheduler pools contain record starts through the inclusive LAST address.
 ; Torpedo records are interleaved by station; successive records for one
 ; station are two records ($32 bytes) apart.
 TARGET_POOL_BASE            EQU $C000
+TARGET_LANE_UPPER_BASE      EQU $C000
+TARGET_LANE_LOWER_BASE      EQU $C032
+TARGET_LANE_UPPER_Y         EQU $1A
+TARGET_LANE_LOWER_Y         EQU $33
 TARGET_POOL_LAST            EQU $C04B
 TARGET_POOL_COUNT           EQU $04
 MINE_POOL_BASE              EQU $C064
+MINE_LANE_UPPER_BASE        EQU $C064
+MINE_LANE_MIDDLE_BASE       EQU $C096
+MINE_LANE_LOWER_BASE        EQU $C0C8
+MINE_LANE_UPPER_Y           EQU $4C
+MINE_LANE_MIDDLE_Y          EQU $64
+MINE_LANE_LOWER_Y           EQU $82
 MINE_POOL_LAST              EQU $C0E1
 MINE_POOL_COUNT             EQU $06
 TORPEDO_POOL_BASE           EQU $C0FA
@@ -189,6 +248,10 @@ TORPEDO_POOL_RIGHT_BASE     EQU $C113
 TORPEDO_POOL_LAST           EQU $C1A9
 TORPEDO_POOL_COUNT          EQU $08
 TORPEDO_STATION_STRIDE      EQU $32
+
+TORPEDO_FRAME_NEAR_MIN_Y    EQU $78
+TORPEDO_FRAME_MIDDLE_MIN_Y  EQU $46
+TORPEDO_FRAME_FAR_MIN_Y     EQU $00
 
 TARGET_SCHEDULER_CURSOR     EQU $C1C2
 MINE_SCHEDULER_CURSOR       EQU $C1C4
@@ -1174,17 +1237,18 @@ hit_station_selected:   INC     HL                      ; OBJECT_TYPE
                         POP     IY
                         EX      DE,HL
 
-; Convert target type to the BCD score increment used by this record.
-                        LD      B,$03
-                        CP      $03
+; Convert target type to the BCD score increment used by this record.  The
+; ordered IDs make the three score-class boundaries direct comparisons.
+                        LD      B,SCORE_WARSHIP_BCD
+                        CP      OBJECT_TYPE_FREIGHTER_A
                         JR      C,hit_score_value_ready
-                        LD      B,$01
-                        CP      $05
+                        LD      B,SCORE_FREIGHTER_BCD
+                        CP      OBJECT_TYPE_PT_BOAT
                         JR      C,hit_score_value_ready
-                        LD      B,$05
-                        CP      $07
+                        LD      B,SCORE_PT_BOAT_BCD
+                        CP      OBJECT_TYPE_TORPEDO
                         JR      C,hit_score_value_ready
-                        LD      B,$10
+                        LD      B,SCORE_SUPER_SUB_BCD
 hit_score_value_ready:  LD      A,(HL)
                         ADD     A,B
                         DAA
@@ -1323,14 +1387,14 @@ mine_score_selected:    CP      $10
                         JR      C,spawn_near_mine_lane
                         CP      $20
                         JR      C,spawn_middle_mine_lane
-                        LD      HL,$C0C8
-                        LD      D,$82
+                        LD      HL,MINE_LANE_LOWER_BASE
+                        LD      D,MINE_LANE_LOWER_Y
                         CALL    ACTIVATE_MINE_IN_LANE
-spawn_middle_mine_lane: LD      HL,$C096
-                        LD      D,$64
+spawn_middle_mine_lane: LD      HL,MINE_LANE_MIDDLE_BASE
+                        LD      D,MINE_LANE_MIDDLE_Y
                         CALL    ACTIVATE_MINE_IN_LANE
-spawn_near_mine_lane:   LD      HL,MINE_POOL_BASE
-                        LD      D,$4C
+spawn_near_mine_lane:   LD      HL,MINE_LANE_UPPER_BASE
+                        LD      D,MINE_LANE_UPPER_Y
                         CALL    ACTIVATE_MINE_IN_LANE
                         EXX
                         POP     IY
@@ -1383,7 +1447,7 @@ ACTIVATE_TARGET_LANES:  PUSH    IY
                         EXX
                         LD      HL,TARGET_POOL_BASE
                         CALL    ACTIVATE_TARGET_IN_LANE
-                        LD      HL,$C032
+                        LD      HL,TARGET_LANE_LOWER_BASE
                         CALL    ACTIVATE_TARGET_IN_LANE
                         POP     IY
                         EXX
@@ -1429,14 +1493,15 @@ target_slot_selected:   PUSH    AF
                         LD      A,$08
 target_color_ready:     LD      (IY+OBJECT_COLOR),A
                         LD      A,L
-                        CP      $33
-                        LD      A,$1A
+                        CP      TARGET_LANE_LOWER_Y
+                        LD      A,TARGET_LANE_UPPER_Y
                         JR      C,target_lane_y_ready
-                        LD      A,$33
+                        LD      A,TARGET_LANE_LOWER_Y
 target_lane_y_ready:    LD      (IY+OBJECT_Y_POSITION_HI),A
 
-; TARGET_TYPE_SEQUENCE supplies normal target types.  Type $03 can be promoted
-; to the special diving target while its progression counter is below two.
+; TARGET_TYPE_SEQUENCE supplies the six surface targets.  FREIGHTER_A entries
+; can be replaced by the 1000-point Super Sub while its progression counter is
+; below two and fewer than 24 BCD seconds remain.
                         LD      HL,($C20B)
                         LD      B,(HL)
                         INC     HL
@@ -1446,19 +1511,19 @@ target_lane_y_ready:    LD      (IY+OBJECT_Y_POSITION_HI),A
                         LD      HL,TARGET_TYPE_SEQUENCE
 target_sequence_ready:  LD      ($C20B),HL
                         LD      A,B
-                        CP      $03
+                        CP      OBJECT_TYPE_FREIGHTER_A
                         JR      NZ,target_type_ready
                         LD      A,($C1DB)
                         CP      $24
-                        LD      A,$03
+                        LD      A,OBJECT_TYPE_FREIGHTER_A
                         JR      NC,target_type_ready
                         LD      A,($C1F7)
                         CP      $02
                         JR      Z,target_type_ready
                         INC     A
                         LD      ($C1F7),A
-                        CALL    $0D02
-                        LD      A,OBJECT_TYPE_DIVE_TARGET
+                        CALL    SHOW_SUPER_SUB_ANNOUNCEMENT
+                        LD      A,OBJECT_TYPE_SUPER_SUB
 target_type_ready:      LD      (IY+OBJECT_TYPE),A
                         LD      (IY+OBJECT_MAGIC_MODE),$08
 
@@ -1477,7 +1542,7 @@ target_type_ready:      LD      (IY+OBJECT_TYPE),A
                         LD      (IY+OBJECT_X_VELOCITY_LO),A
                         LD      (IY+OBJECT_X_VELOCITY_HI),E
                         LD      A,(IY+OBJECT_TYPE)
-                        CP      $05
+                        CP      OBJECT_TYPE_PT_BOAT
                         LD      A,$8E
                         JR      NZ,target_right_limit_ready
                         LD      A,$9A
@@ -1498,19 +1563,19 @@ target_right_limit_ready:
                         LD      (IY+OBJECT_X_VELOCITY_LO),C
                         LD      (IY+OBJECT_X_VELOCITY_HI),B
                         LD      A,(IY+OBJECT_TYPE)
-                        CP      $05
+                        CP      OBJECT_TYPE_PT_BOAT
                         LD      A,$96
                         JR      Z,target_left_start_ready
                         LD      A,$8C
 target_left_start_ready:
                         LD      (IY+OBJECT_X_POSITION_HI),A
 target_direction_ready: LD      A,(IY+OBJECT_TYPE)
-                        CP      $05
+                        CP      OBJECT_TYPE_PT_BOAT
                         JR      C,target_sound_done
-                        CP      OBJECT_TYPE_DIVE_TARGET
+                        CP      OBJECT_TYPE_SUPER_SUB
                         JR      NZ,START_SONAR_SEQUENCE
 
-; Target type $08 begins the dive effect.  $F0 supplies both the descending
+; The Super Sub begins the dive effect.  $F0 supplies both the descending
 ; three-bit pan code and the first port-$41 bit-3 trigger edge.
 START_DIVE_SOUND:
                         LD      A,$F0
@@ -1523,9 +1588,9 @@ dive_pan_selected:      LD      (SOUND_DIVE_PAN_XOR),A
                         LD      (IY+OBJECT_COLOR),$0C
                         JR      target_sound_done
 
-; Other target types start a ten-ping alternating sonar sequence.  The first
-; left-channel pulse is asserted immediately; UPDATE_SONAR_SEQUENCE schedules
-; the remaining left/right pulses as SONAR_CADENCE_TIMER expires.
+; The PT Boat starts a ten-ping alternating sonar sequence.  The first left
+; pulse is asserted immediately; UPDATE_SONAR_SEQUENCE schedules the remaining
+; left/right pulses as SONAR_CADENCE_TIMER expires.
 START_SONAR_SEQUENCE:   LD      A,$14
                         LD      (SONAR_CADENCE_TIMER),A
 TRIGGER_INITIAL_LEFT_SONAR:
@@ -1661,8 +1726,8 @@ INITIALIZE_TORPEDO_OBJECT:
                         LD      (IY+OBJECT_Y_MIN),$23
                         LD      (IY+OBJECT_X_MAX),$9C
                         LD      (IY+OBJECT_MAGIC_MODE),$08
-                        LD      (IY+OBJECT_BITMAP_PTR_HI),$11
-                        LD      (IY+OBJECT_BITMAP_PTR_LO),$2D
+                        LD      (IY+OBJECT_BITMAP_PTR_HI),$11 ; BITMAP_TORPEDO_NEAR high
+                        LD      (IY+OBJECT_BITMAP_PTR_LO),$2D ; BITMAP_TORPEDO_NEAR low
                         LD      A,$08
                         BIT     0,C
                         JR      Z,torpedo_color_selected
@@ -1728,8 +1793,8 @@ sonar_update_done:      JP      (IY)
 ; $0AF4: Retire target-hit score overlays after the explosion advances
 ;-------------------------------------------------------------------------------
 ; PROCESS_SHIP_HIT sets bit 2 after drawing a score beside the struck target.
-; The overlay survives through two animation frames, or four for the diving
-; target, before this pass erases it and restores the owning station's lamps.
+; The overlay survives through two animation frames, or four for the Super Sub,
+; before this pass erases it and restores the owning station's lamps.
 ERASE_EXPIRED_HIT_SCORES:
                         PUSH    BC
                         PUSH    IY
@@ -1739,7 +1804,7 @@ ERASE_EXPIRED_HIT_SCORES:
 erase_hit_score_loop:   BIT     2,(IY+OBJECT_FLAGS)
                         JR      Z,next_hit_score_record
                         LD      A,(IY+OBJECT_TYPE)
-                        CP      OBJECT_TYPE_DIVE_TARGET
+                        CP      OBJECT_TYPE_SUPER_SUB
                         LD      A,$04
                         JR      Z,hit_score_frame_limit_ready
                         LD      A,$02
@@ -1847,7 +1912,15 @@ coin_counter_done:      JP      (IY)
                         DB      $30,$E5,$79,$CD,$F0,$0C,$78,$CD,$F0,$0C,$21,$00,$00,$39,$E5,$01 ; $0CC7  0.y...x...!..9..
                         DB      $40,$04,$3E,$30,$BE,$20,$04,$71,$23,$10,$F9,$E1,$CD,$E4,$15,$33 ; $0CD7   .>0. .q#......3
                         DB      $33,$33,$33,$33,$33,$33,$33,$C1,$C9,$57,$1F,$1F,$1F,$1F,$E6,$0F ; $0CE7  3333333..W......
-                        DB      $F6,$30,$6F,$7A,$E6,$0F,$F6,$30,$67,$E3,$E9,$3E,$01,$32,$CA,$C1 ; $0CF7  .0oz...0g..>.2..
+                        DB      $F6,$30,$6F,$7A,$E6,$0F,$F6,$30,$67,$E3,$E9 ; $0CF7-$0D01
+
+;-------------------------------------------------------------------------------
+; $0D02: Suspend object service and present the Super Sub warning
+;-------------------------------------------------------------------------------
+; Displays TEXT_SUPER and TEXT_SUB, waits $40 interrupts, clears the warning
+; rectangle, then releases SOUND_FRAME_DIVIDER so object service resumes.
+SHOW_SUPER_SUB_ANNOUNCEMENT:
+                        DB      $3E,$01,$32,$CA,$C1                         ; $0D02
                         DB      $3E,$3C,$32,$FF,$C1,$3E,$4B,$32,$01,$C2,$3E,$0C,$32,$02,$C2,$21 ; $0D07  ><2..>K2..>.2..!
                         DB      $7B,$13,$CD,$D7,$15,$3E,$44,$32,$FF,$C1,$3E,$69,$32,$01,$C2,$21 ; $0D17  {....>D2..>i2..!
                         DB      $81,$13,$CD,$D7,$15,$06,$40,$76,$10,$FD,$21,$8E,$57,$11,$3C,$00 ; $0D27  ...... v..!.W.<.
@@ -1875,29 +1948,99 @@ TORPEDO_TRAJECTORY_RIGHT_TABLE:
                         DB      $A6                                                     ; $0DC7
 
 ;-------------------------------------------------------------------------------
-; $0DC8: Cyclic object-type sequence for the two moving-target lanes
+; $0DC8: Cyclic surface-target sequence for both target lanes
 ;-------------------------------------------------------------------------------
+; The sequence contains all five large-ship silhouettes and two PT Boat slots.
+; FREIGHTER_A slots are the only entries eligible for Super Sub replacement.
 TARGET_TYPE_SEQUENCE:
-                        DB      $03,$00,$05,$04,$01,$03,$02,$04,$05,$FF                 ; $0DC8
+                        DB      OBJECT_TYPE_FREIGHTER_A
+                        DB      OBJECT_TYPE_WARSHIP_A
+                        DB      OBJECT_TYPE_PT_BOAT
+                        DB      OBJECT_TYPE_FREIGHTER_B
+                        DB      OBJECT_TYPE_WARSHIP_B
+                        DB      OBJECT_TYPE_FREIGHTER_A
+                        DB      OBJECT_TYPE_WARSHIP_C
+                        DB      OBJECT_TYPE_FREIGHTER_B
+                        DB      OBJECT_TYPE_PT_BOAT
+                        DB      $FF                     ; sequence terminator
 
 ;-------------------------------------------------------------------------------
-; $0DD2: Signed base horizontal speed indexed by object type
+; $0DD2: Base horizontal speed indexed by all nine object types
 ;-------------------------------------------------------------------------------
+; ACTIVATE_TARGET_IN_LANE multiplies these values by four.  Mine and torpedo
+; constructors supply their own velocities; their table entries are zero.
 TARGET_SPEED_TABLE:
-                        DB      $40,$40,$40,$20,$20                                     ; $0DD2
-                        DB      $80,$00,$00,$40                                         ; $0DD7
+                        DB      TARGET_SPEED_MEDIUM_RAW  ; type 0 WARSHIP_A: +1.0
+                        DB      TARGET_SPEED_MEDIUM_RAW  ; type 1 WARSHIP_B: +1.0
+                        DB      TARGET_SPEED_MEDIUM_RAW  ; type 2 WARSHIP_C: +1.0
+                        DB      TARGET_SPEED_SLOW_RAW    ; type 3 FREIGHTER_A: +0.5
+                        DB      TARGET_SPEED_SLOW_RAW    ; type 4 FREIGHTER_B: +0.5
+                        DB      TARGET_SPEED_FAST_RAW    ; type 5 PT_BOAT: +2.0
+                        DB      $00                      ; type 6 MINE: constructor
+                        DB      $00                      ; type 7 TORPEDO: aim table
+                        DB      TARGET_SPEED_MEDIUM_RAW  ; type 8 SUPER_SUB: +1.0
 
 ;-------------------------------------------------------------------------------
-; $0DDB: Four 25-byte records copied into target and torpedo pools
+; $0DDB: Four complete 25-byte object records copied into scheduler pools
 ;-------------------------------------------------------------------------------
+; INITIALIZE_OBJECT_POOLS copies these records in order to target records 0/2
+; and the first left/right torpedo records.  It asserts ACTIVE after the copy.
 OBJECT_INITIAL_TEMPLATES:
-                        DB      $00,$00,$00,$00,$00,$00,$00,$00,$1A,$00,$00,$00         ; $0DDB
-                        DB      $80,$00,$00,$00,$00,$8C,$00,$00,$08,$00,$00,$04,$00,$00,$08,$00 ; $0DE7  ................
-                        DB      $00,$00,$00,$00,$00,$33,$00,$00,$00,$80,$FF,$00,$8C,$00,$9F,$00 ; $0DF7  .....3..........
-                        DB      $00,$48,$00,$00,$0C,$00,$00,$07,$00,$06,$00,$00,$FD,$00,$BE,$23 ; $0E07  .H.............#
-                        DB      $00,$00,$00,$00,$00,$20,$00,$9F,$2D,$11,$08,$00,$00,$08,$00,$00 ; $0E17  ..... ..-.......
-                        DB      $07,$00,$06,$00,$00,$FD,$00,$BE,$23,$00,$00,$00,$00,$00,$78,$00 ; $0E27  ........#.....x.
-                        DB      $9F,$2D,$11,$08,$00,$00,$04,$00                         ; $0E37
+INITIAL_UPPER_WARSHIP_TEMPLATE:
+                        DB      $00,OBJECT_TYPE_WARSHIP_A,$00 ; flags, type, timer
+                        DB      $00,$00                 ; Y acceleration, 8.8
+                        DB      $00,$00                 ; Y velocity, 8.8
+                        DB      $00,TARGET_LANE_UPPER_Y ; Y position $1A00
+                        DB      $00,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $80,$00                 ; X velocity +$0080
+                        DB      $00,$00                 ; X position $0000
+                        DB      $00,$8C                 ; reserved $10, X maximum
+                        DB      $00,$00                 ; bitmap selected on first update
+                        DB      $08                     ; normal Magic-RAM direction
+                        DB      $00,$00                 ; no prior VRAM address
+                        DB      $04,$00                 ; color, animation frame
+
+INITIAL_LOWER_SUPER_SUB_TEMPLATE:
+                        DB      $00,OBJECT_TYPE_SUPER_SUB,$00 ; flags, type, timer
+                        DB      $00,$00                 ; Y acceleration, 8.8
+                        DB      $00,$00                 ; Y velocity, 8.8
+                        DB      $00,TARGET_LANE_LOWER_Y ; Y position $3300
+                        DB      $00,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $80,$FF                 ; X velocity -$0080
+                        DB      $00,$8C                 ; X position $8C00
+                        DB      $00,$9F                 ; reserved $10, X maximum
+                        DB      $00,$00                 ; bitmap selected on first update
+                        DB      $48                     ; reversed Magic-RAM direction
+                        DB      $00,$00                 ; no prior VRAM address
+                        DB      $0C,$00                 ; color, surfaced frame
+
+INITIAL_LEFT_TORPEDO_TEMPLATE:
+                        DB      $00,OBJECT_TYPE_TORPEDO,$00 ; flags, type, timer
+                        DB      $06,$00                 ; Y acceleration +$0006
+                        DB      $00,$FD                 ; Y velocity -$0300
+                        DB      $00,$BE                 ; Y position $BE00
+                        DB      $23,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $00,$00                 ; X velocity supplied later
+                        DB      $00,$20                 ; initial X position $2000
+                        DB      $00,$9F                 ; reserved $10, X maximum
+                        DB      $2D,$11                 ; BITMAP_TORPEDO_NEAR
+                        DB      $08                     ; normal Magic-RAM direction
+                        DB      $00,$00                 ; no prior VRAM address
+                        DB      $08,$00                 ; left color, near frame
+
+INITIAL_RIGHT_TORPEDO_TEMPLATE:
+                        DB      $00,OBJECT_TYPE_TORPEDO,$00 ; flags, type, timer
+                        DB      $06,$00                 ; Y acceleration +$0006
+                        DB      $00,$FD                 ; Y velocity -$0300
+                        DB      $00,$BE                 ; Y position $BE00
+                        DB      $23,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $00,$00                 ; X velocity supplied later
+                        DB      $00,$78                 ; initial X position $7800
+                        DB      $00,$9F                 ; reserved $10, X maximum
+                        DB      $2D,$11                 ; BITMAP_TORPEDO_NEAR
+                        DB      $08                     ; normal Magic-RAM direction
+                        DB      $00,$00                 ; no prior VRAM address
+                        DB      $04,$00                 ; right color, near frame
 
 ;-------------------------------------------------------------------------------
 ; $0E3F: Object bitmap descriptors and animation frames
@@ -2217,10 +2360,10 @@ UPDATE_TARGET_OBJECT:   BIT     6,(IX+OBJECT_FLAGS)
                         BIT     4,(IX+OBJECT_FLAGS)
                         JR      NZ,ERASE_AND_DEACTIVATE_OBJECT
 
-; The diving target advances its first two frames on a 42-tick cadence.  Other
-; target types retain the animation frame selected by their state path.
+; The Super Sub advances through its two dive frames on a 42-tick cadence.
+; Other target types retain the animation frame selected by their state path.
                         LD      A,(IX+OBJECT_TYPE)
-                        CP      OBJECT_TYPE_DIVE_TARGET
+                        CP      OBJECT_TYPE_SUPER_SUB
                         JR      NZ,target_bitmap_ready
                         INC     (IX+OBJECT_TIMER)
                         LD      A,(IX+OBJECT_TIMER)
@@ -2257,7 +2400,7 @@ torpedo_result_state_selected:
 ;-------------------------------------------------------------------------------
 ; $14B4: Update one torpedo and resolve its collision lane
 ;-------------------------------------------------------------------------------
-UPDATE_TORPEDO_OBJECT:  LD      HL,$112D               ; base torpedo bitmap
+UPDATE_TORPEDO_OBJECT:  LD      HL,BITMAP_TORPEDO_NEAR
                         LD      (IX+OBJECT_BITMAP_PTR_HI),H
                         LD      (IX+OBJECT_BITMAP_PTR_LO),L
                         LD      H,(IX+OBJECT_VRAM_ADDR_HI)
@@ -2672,6 +2815,8 @@ raster_motion_reverse:  LD      (HL),RASTER_MOTION_PERIOD
 ;-------------------------------------------------------------------------------
 ; $17DA: Advance a collided target or mine through its hit-animation frames
 ;-------------------------------------------------------------------------------
+; A hit Super Sub skips any remaining timed dive frames and enters its first
+; explosion frame at index 3.  Other objects simply advance one list entry.
 ADVANCE_OBJECT_HIT_ANIMATION:
                         CALL    DECAY_OBJECT_TIMER
                         OR      A
@@ -2679,7 +2824,7 @@ ADVANCE_OBJECT_HIT_ANIMATION:
                         LD      (IX+OBJECT_TIMER),$06
                         CALL    ERASE_OBJECT_BITMAP
                         LD      A,(IX+OBJECT_TYPE)
-                        CP      OBJECT_TYPE_DIVE_TARGET
+                        CP      OBJECT_TYPE_SUPER_SUB
                         JR      NZ,advance_hit_frame
                         LD      A,(IX+OBJECT_ANIMATION_FRAME)
                         CP      $02
@@ -3048,37 +3193,128 @@ interrupt_schedule_b_54:
                         DB      RASTER_SCHEDULE_END
 
 ;-------------------------------------------------------------------------------
-; $1A53: Per-type lists of object bitmap and animation-frame pointers
+; $1A53: Per-type bitmap and hit-animation pointer lists
 ;-------------------------------------------------------------------------------
+; Frame zero is the live object.  Collision handling increments the frame every
+; six object visits and deactivates the record when SELECT_OBJECT_BITMAP reaches
+; the zero terminator.  Shared tails are intentional ROM-space reuse.
 OBJECT_BITMAP_POINTER_LISTS:
-                        DB      $3F,$0E,$EF,$10,$A2,$0F,$E0,$0F,$0A,$10,$28,$10             ; $1A53
-                        DB      $3A,$10,$00,$00,$7D,$0E,$C1,$10,$5E,$10,$72,$10,$80,$10,$8A,$10 ; $1A5F  :...}...^.r.....
-                        DB      $00,$00,$AB,$0E,$EF,$10,$A2,$0F,$E0,$0F,$0A,$10,$28,$10,$3A,$10 ; $1A6F  ............(.:.
-                        DB      $00,$00,$DF,$0E,$C1,$10,$5E,$10,$72,$10,$80,$10,$8A,$10,$00,$00 ; $1A7F  ......^.r.......
-                        DB      $09,$0F,$C1,$10,$5E,$10,$72,$10,$80,$10,$8A,$10,$00,$00,$2F,$0F ; $1A8F  ....^.r......./.
-                        DB      $B0,$10,$80,$10,$8A,$10,$00,$00,$40,$0F,$66,$0F,$88,$0F,$B0,$10 ; $1A9F  ........ .f.....
-                        DB      $80,$10,$8A,$10,$00,$00,$7B,$11,$8D,$11,$00,$00,$2D,$11,$47,$11 ; $1AAF  ......{.....-.G.
-                        DB      $62,$11,$00,$00                                             ; $1ABF
+WARSHIP_A_BITMAP_SEQUENCE:
+                        DW      BITMAP_WARSHIP_A
+                        DW      BITMAP_LARGE_HIT_FRAME_1
+                        DW      BITMAP_LARGE_HIT_FRAME_2
+                        DW      BITMAP_LARGE_HIT_FRAME_3
+                        DW      BITMAP_LARGE_HIT_FRAME_4
+                        DW      BITMAP_LARGE_HIT_FRAME_5
+                        DW      BITMAP_LARGE_HIT_FRAME_6
+                        DW      $0000
+
+WARSHIP_B_BITMAP_SEQUENCE:
+                        DW      BITMAP_WARSHIP_B
+                        DW      BITMAP_MEDIUM_HIT_FRAME_1
+                        DW      BITMAP_MEDIUM_HIT_FRAME_2
+                        DW      BITMAP_MEDIUM_HIT_FRAME_3
+                        DW      BITMAP_SMALL_HIT_FRAME_2
+                        DW      BITMAP_SMALL_HIT_FRAME_3
+                        DW      $0000
+
+WARSHIP_C_BITMAP_SEQUENCE:
+                        DW      BITMAP_WARSHIP_C
+                        DW      BITMAP_LARGE_HIT_FRAME_1
+                        DW      BITMAP_LARGE_HIT_FRAME_2
+                        DW      BITMAP_LARGE_HIT_FRAME_3
+                        DW      BITMAP_LARGE_HIT_FRAME_4
+                        DW      BITMAP_LARGE_HIT_FRAME_5
+                        DW      BITMAP_LARGE_HIT_FRAME_6
+                        DW      $0000
+
+FREIGHTER_A_BITMAP_SEQUENCE:
+                        DW      BITMAP_FREIGHTER_A
+                        DW      BITMAP_MEDIUM_HIT_FRAME_1
+                        DW      BITMAP_MEDIUM_HIT_FRAME_2
+                        DW      BITMAP_MEDIUM_HIT_FRAME_3
+                        DW      BITMAP_SMALL_HIT_FRAME_2
+                        DW      BITMAP_SMALL_HIT_FRAME_3
+                        DW      $0000
+
+FREIGHTER_B_BITMAP_SEQUENCE:
+                        DW      BITMAP_FREIGHTER_B
+                        DW      BITMAP_MEDIUM_HIT_FRAME_1
+                        DW      BITMAP_MEDIUM_HIT_FRAME_2
+                        DW      BITMAP_MEDIUM_HIT_FRAME_3
+                        DW      BITMAP_SMALL_HIT_FRAME_2
+                        DW      BITMAP_SMALL_HIT_FRAME_3
+                        DW      $0000
+
+PT_BOAT_BITMAP_SEQUENCE:
+                        DW      BITMAP_PT_BOAT
+                        DW      BITMAP_SMALL_HIT_FRAME_1
+                        DW      BITMAP_SMALL_HIT_FRAME_2
+                        DW      BITMAP_SMALL_HIT_FRAME_3
+                        DW      $0000
+
+; The Super Sub advances from surfaced through DIVE_1 and DIVE_2 every 42
+; target updates.  A collision skips directly to SMALL_HIT_FRAME_1.
+SUPER_SUB_BITMAP_SEQUENCE:
+                        DW      BITMAP_SUPER_SUB_SURFACED
+                        DW      BITMAP_SUPER_SUB_DIVE_1
+                        DW      BITMAP_SUPER_SUB_DIVE_2
+                        DW      BITMAP_SMALL_HIT_FRAME_1
+                        DW      BITMAP_SMALL_HIT_FRAME_2
+                        DW      BITMAP_SMALL_HIT_FRAME_3
+                        DW      $0000
+
+MINE_BITMAP_SEQUENCE:
+                        DW      BITMAP_MINE
+                        DW      BITMAP_MINE_HIT
+                        DW      $0000
+
+; Torpedoes select one of three perspective frames from their Y coordinate.
+; They do not use the hit-animation path.
+TORPEDO_BITMAP_SEQUENCE:
+                        DW      BITMAP_TORPEDO_NEAR
+                        DW      BITMAP_TORPEDO_MIDDLE
+                        DW      BITMAP_TORPEDO_FAR
+                        DW      $0000
 
 ;-------------------------------------------------------------------------------
-; $1AC3: Object type to bitmap-pointer-list table
+; $1AC3: Object type to bitmap-sequence table
 ;-------------------------------------------------------------------------------
 OBJECT_BITMAP_SET_TABLE:
-                        DB      $53,$1A,$63,$1A,$71,$1A,$81,$1A,$8F,$1A,$9D,$1A             ; $1AC3
-                        DB      $B5,$1A,$BB,$1A,$A7,$1A                                     ; $1ACF
+                        DW      WARSHIP_A_BITMAP_SEQUENCE  ; type 0
+                        DW      WARSHIP_B_BITMAP_SEQUENCE  ; type 1
+                        DW      WARSHIP_C_BITMAP_SEQUENCE  ; type 2
+                        DW      FREIGHTER_A_BITMAP_SEQUENCE ; type 3
+                        DW      FREIGHTER_B_BITMAP_SEQUENCE ; type 4
+                        DW      PT_BOAT_BITMAP_SEQUENCE     ; type 5
+                        DW      MINE_BITMAP_SEQUENCE        ; type 6
+                        DW      TORPEDO_BITMAP_SEQUENCE     ; type 7
+                        DW      SUPER_SUB_BITMAP_SEQUENCE   ; type 8
 
 ;-------------------------------------------------------------------------------
 ; $1AD5: Torpedo Y thresholds and two-record collision-lane bases
 ;-------------------------------------------------------------------------------
+; Entries are ordered from the bottom of the screen upward.  The collision
+; resolver records lane numbers 5..1; lanes 5..3 are mines and 2..1 targets.
 TORPEDO_COLLISION_LANE_TABLE:
-                        DB      $82,$C8,$C0,$64,$96,$C0,$4C,$64,$C0,$33                     ; $1AD5
-                        DB      $32,$C0,$1A,$00,$C0                                         ; $1ADF
+                        DB      MINE_LANE_LOWER_Y
+                        DW      MINE_LANE_LOWER_BASE
+                        DB      MINE_LANE_MIDDLE_Y
+                        DW      MINE_LANE_MIDDLE_BASE
+                        DB      MINE_LANE_UPPER_Y
+                        DW      MINE_LANE_UPPER_BASE
+                        DB      TARGET_LANE_LOWER_Y
+                        DW      TARGET_LANE_LOWER_BASE
+                        DB      TARGET_LANE_UPPER_Y
+                        DW      TARGET_LANE_UPPER_BASE
 
 ;-------------------------------------------------------------------------------
 ; $1AE4: Torpedo perspective-frame Y thresholds
 ;-------------------------------------------------------------------------------
 TORPEDO_FRAME_Y_TABLE:
-                        DB      $78,$46,$00                                                 ; $1AE4
+                        DB      TORPEDO_FRAME_NEAR_MIN_Y   ; frame 0: near, 4x21
+                        DB      TORPEDO_FRAME_MIDDLE_MIN_Y ; frame 1: middle, 4x21
+                        DB      TORPEDO_FRAME_FAR_MIN_Y    ; frame 2: far, 4x11
 
 TEXT_CONGRATULATIONS_EN:
                         DB      $43,$4F,$4E,$47,$52,$41,$54,$55,$4C,$41,$54,$49,$4F,$4E,$53,$00 ; $1AE7  CONGRATULATIONS
