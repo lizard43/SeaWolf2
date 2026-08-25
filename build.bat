@@ -29,9 +29,36 @@ if errorlevel 1 exit /b 1
 echo Created: roms\seawolf2.zip
 
 echo.
-echo [4/4] SHA1
-powershell -NoProfile -Command "'roms\sw2x1.bin','roms\sw2x2.bin','roms\sw2x3.bin','roms\sw2x4.bin' | ForEach-Object { $h=(Get-FileHash $_ -Algorithm SHA1).Hash.ToLower(); '{0}  {1}' -f $h,$_ }"
-if errorlevel 1 exit /b 1
+echo [4/4] Verify official ROM SHA-1
+set "hash_failed=0"
+call :verify_sha1 "roms\sw2x1.bin" "c6e411444a824ce54b0eee10f7dc15e4229ec070"
+call :verify_sha1 "roms\sw2x2.bin" "63d8c6b77e0aa536b4f5bb774bc9285f736d4265"
+call :verify_sha1 "roms\sw2x3.bin" "c9dbeaa4540dc95f98970f501a420b18b9898c91"
+call :verify_sha1 "roms\sw2x4.bin" "57d0ddea9f8bf082f50d0468a726fd91aaabf4e4"
+
+echo.
+if "%hash_failed%"=="1" (
+    echo WARNING: Generated ROMs do not match the official Sea Wolf II ROMs.
+    echo Build failed ROM verification.
+    exit /b 1
+)
+
+echo PASS: All generated ROMs match the official Sea Wolf II SHA-1 values.
 
 echo.
 echo Build complete: roms\seawolf2.zip
+exit /b 0
+
+:verify_sha1
+set "rom_file=%~1"
+set "expected_sha1=%~2"
+set "actual_sha1="
+for /f "usebackq delims=" %%H in (`powershell -NoProfile -Command "(Get-FileHash -LiteralPath '%rom_file%' -Algorithm SHA1).Hash.ToLower()"`) do set "actual_sha1=%%H"
+echo %actual_sha1%  %rom_file%
+if /I not "%actual_sha1%"=="%expected_sha1%" (
+    echo WARNING: SHA-1 mismatch for %rom_file%
+    echo   Expected: %expected_sha1%
+    echo   Actual:   %actual_sha1%
+    set "hash_failed=1"
+)
+exit /b 0

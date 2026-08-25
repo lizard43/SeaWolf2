@@ -29,8 +29,39 @@ zip -jqFS roms/seawolf2.zip roms/sw2x1.bin roms/sw2x2.bin roms/sw2x3.bin roms/sw
 echo "Created: roms/seawolf2.zip"
 
 echo
-echo "[4/4] SHA1"
-sha1sum roms/sw2x1.bin roms/sw2x2.bin roms/sw2x3.bin roms/sw2x4.bin
+echo "[4/4] Verify official ROM SHA-1"
+
+hash_failed=0
+
+verify_sha1() {
+    local rom_file="$1"
+    local expected_sha1="$2"
+    local actual_sha1
+
+    actual_sha1="$(sha1sum "$rom_file" | awk '{print $1}')"
+    printf '%s  %s\n' "$actual_sha1" "$rom_file"
+
+    if [[ "$actual_sha1" != "$expected_sha1" ]]; then
+        echo "WARNING: SHA-1 mismatch for $rom_file"
+        echo "  Expected: $expected_sha1"
+        echo "  Actual:   $actual_sha1"
+        hash_failed=1
+    fi
+}
+
+verify_sha1 roms/sw2x1.bin c6e411444a824ce54b0eee10f7dc15e4229ec070
+verify_sha1 roms/sw2x2.bin 63d8c6b77e0aa536b4f5bb774bc9285f736d4265
+verify_sha1 roms/sw2x3.bin c9dbeaa4540dc95f98970f501a420b18b9898c91
+verify_sha1 roms/sw2x4.bin 57d0ddea9f8bf082f50d0468a726fd91aaabf4e4
+
+echo
+if [[ "$hash_failed" -ne 0 ]]; then
+    echo "WARNING: Generated ROMs do not match the official Sea Wolf II ROMs."
+    echo "Build failed ROM verification."
+    exit 1
+fi
+
+echo "PASS: All generated ROMs match the official Sea Wolf II SHA-1 values."
 
 echo
 echo "Build complete: roms/seawolf2.zip"
