@@ -14,7 +14,7 @@ is implemented in TERSE, DNA's direct-threaded Z80 language. Native Z80 primitiv
 | [Graphics and text](#structured-graphics-and-tables) | 43 font glyphs, localized prompts, status graphics, 26 referenced object descriptors, 2 unreferenced descriptors, self-test patterns, and both trajectory tables are bounded and labeled. |
 | [Sound](#discrete-sound-control) | Sound timers, port `$40/$41` packing, sonar, hit, torpedo, dive, and coin-counter timing are documented. |
 | [TERSE](#terse-execution-architecture) | 11 kernel primitives, 21 native application words, six threaded programs, inline operands, calling conventions, register preservation, interrupt interaction, and maximum stack depths are documented. |
-| [Native code and diagnostics](#service-diagnostics) | All reachable Z80 routines expressed as assembly rather than DBs. The four service entry modes, checksum and walking-bit algorithms, failure displays, handle screen, and convergence grid. |
+| [Native code and diagnostics](#service-diagnostics) | All reachable Z80 routines are expressed as assembly rather than `DB`. The four service entry modes, checksum and walking-bit algorithms, failure displays, handle screen, and convergence grid are documented. |
 | [RAM and I/O](#ram-and-io-ownership) | Every live byte from `$C000-$C221`, work-RAM clear domains, stack reserve, aliases, raster records, object padding, reset-only cells, and ROM-used I/O ports are assigned or formally classified. |
 | [Video and raster](#raster-interrupt-scheduler) | Both 6-entry schedules, IM 2 selection, interrupt handlers, moving split lines, Function Generator modes, Magic RAM usage, drawing, erasure, and collision reads are traced. |
 | [Cabinet and controls](#cabinet-inputs-dip-switches-and-station-ownership) | Handle/start/coin inputs, S1 operator switches, service selection, station ownership, Gray-code decoding, the 32-way aim clamp, trajectories, and language contacts are resolved. The French-contact correction is tracked by [MAME PR #15989](https://github.com/mamedev/mame/pull/15989). |
@@ -170,10 +170,10 @@ Y/X/size operand groups consumed by `TERSE_DRAW_TEXT_INLINE`.
 flowchart TD
     cell["BC points to the next execution cell"] --> dispatch["TERSE_DISPATCH"]
     dispatch --> word["Kernel or native word"]
-    word -->|"JP (IY)"| dispatch
-    word -->|"RST $08"| enter["TERSE_ENTER"]
+    word -->|JP through IY| dispatch
+    word -->|RST 08h| enter["TERSE_ENTER"]
     enter --> nested["Nested inline thread"]
-    nested -->|"TERSE_RETURN"| dispatch
+    nested -->|TERSE_RETURN| dispatch
 ```
 
 ### Register model and dispatch ABI
@@ -434,7 +434,7 @@ and all 21 application words are now accounted for. No unlabeled TERSE
 execution cell, inline address, native application word, or threaded code area
 remains in the ROM.
 
-## RAM and I/O
+## RAM and I/O ownership
 
 ### MAME CPU address map
 
@@ -655,11 +655,11 @@ fill. All four bytes of each RAM motion state are live; none is reserved.
 
 ```mermaid
 flowchart TD
-    r84["$84 alternate raster"] --> rd7["$D7 alternate raster"]
-    rd7 --> r0c["$0C alternate raster"]
-    r0c --> r18["$18 frame service"]
-    r18 --> r30["$30 alternate raster"]
-    r30 --> r54["$54 alternate raster"]
+    r84["84h alternate raster"] --> rd7["D7h alternate raster"]
+    rd7 --> r0c["0Ch alternate raster"]
+    r0c --> r18["18h frame service"]
+    r18 --> r30["30h alternate raster"]
+    r30 --> r54["54h alternate raster"]
     r54 --> r84
 ```
 
@@ -1531,12 +1531,12 @@ by the `$06` start-button mask.
 
 ```mermaid
 flowchart TD
-    reset["Reset with S1-8 OFF"] --> select{"Port $12 start mask"}
-    select -->|"$00 neither"| rom["Four ROM checksums"]
-    rom --> memory["Video and work RAM"]
-    select -->|"$02 Start 1"| memory
-    select -->|"$04 Start 2"| handles["Two-handle display"]
-    select -->|"$06 both"| grid["Convergence grid"]
+    reset[Reset with S1-8 OFF] --> mode{Start buttons held}
+    mode -->|Neither| rom[Checksum four ROMs]
+    rom --> memory[Test video RAM and work RAM]
+    mode -->|Start 1| memory
+    mode -->|Start 2| handles[Display both handles]
+    mode -->|Both| convergence[Draw convergence grid]
 ```
 
 ### ROM checksum path
