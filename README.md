@@ -78,6 +78,23 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
 
+```cpp
+/*************************************
+ *
+ *  Memory maps
+ *
+ *************************************/
+
+void astrocde_state::seawolf2_map(address_map &map)
+{
+	map(0x0000, 0x1fff).rom();
+	map(0x0000, 0x3fff).w(FUNC(astrocde_state::astrocade_funcgen_w));
+	map(0x4000, 0x7fff).ram().share("videoram");
+	map(0xc000, 0xc3ff).ram();
+}
+```
+
+
 ## Cabinet inputs, DIP switches, and station ownership
 
 ### CPU port map
