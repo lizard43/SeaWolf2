@@ -1,6 +1,9 @@
 cfg/
 
-roms/
+roms/*.bin
+roms/*.zip
 src/*.bin
 src/*.lst
 
+!.gitignore
+!roms/original/seawolf2.zip
