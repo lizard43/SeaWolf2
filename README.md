@@ -12,13 +12,15 @@ not describe that structure correctly.
 ## Current status
 
 - All four source ROMs match the canonical MAME CRC32 and SHA1 values.
-- `src/seawolf2.asm` assembles into a byte-identical 8 KB program image.
+- `src/seawolf2.asm` assembles with zmac 1.3 into a byte-identical 8 KB
+  program image. zmac 1.3 is the required assembler for this project.
 - The generated `roms/seawolf2.zip` runs successfully in MAME 0.289.
 - A controlled title-string edit was tested in MAME, confirming that MAME was
   executing the locally assembled ROM set.
-- The reset path, native TERSE kernel, initial thread at `$02F0`, nested
-  initialization thread at `$036F`, and control thread at `$0544` are
-  reconstructed as assembly.
+- The TERSE architecture is closed: all 11 kernel primitives, 21 native
+  application words, six threaded programs, inline operand formats, calling
+  conventions, register preservation, interrupt interaction, and maximum
+  data/control-stack depths are decoded and documented.
 - Power-on diagnostics are reconstructed as native Z80 and documented.
 - All 43 ten-byte font glyphs for character codes `$30-$5A`, title/status
   strings, and the English, German, and French prompt tables are bounded and
@@ -31,6 +33,9 @@ not describe that structure correctly.
 - The six-bit Gray-code handle conversion, MAME's 64-position remap, the
   32-entry aim clamp, both station trajectories, fixed-point flight equations,
   early X exits, perspective changes, and collision-lane timing are mapped.
+- Every live byte from `$C000-$C221`, all work-RAM clear domains, stack reserve,
+  object padding, reset-only cells, state aliases, raster records, and every
+  I/O port used by the ROM are assigned or formally classified.
 - A MAME 0.289 input-port error that prevents French prompt selection is
   identified; the supplied driver patch corrects the French contact address.
 - The 25-byte object-record ABI, all three scheduler pools, object selection,
@@ -78,22 +83,462 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
 
-```cpp
-/*************************************
- *
- *  Memory maps
- *
- *************************************/
+## TERSE execution architecture
 
-void astrocde_state::seawolf2_map(address_map &map)
-{
-	map(0x0000, 0x1fff).rom();
-	map(0x0000, 0x3fff).w(FUNC(astrocde_state::astrocade_funcgen_w));
-	map(0x4000, 0x7fff).ram().share("videoram");
-	map(0xc000, 0xc3ff).ram();
-}
+Sea Wolf II uses a direct-threaded TERSE engine. A threaded execution cell is a
+little-endian native Z80 address. `TERSE_DISPATCH` reads that address through
+`BC`, advances `BC` to the next cell, and jumps directly to the selected kernel
+or application word. This is the game's foreground control architecture, not a
+small isolated script engine.
+
+The ROM contains 11 thread-dispatchable kernel primitives, 21 native
+application words, and six complete threaded programs: the initial thread, the
+nested initialization thread, the control thread, and three localized GAME
+OVER threads. Every execution cell and 16-bit inline operand is expressed as a
+labeled `DW`. The only TERSE bytes retained as `DB` are the five three-byte
+Y/X/size operand groups consumed by `TERSE_DRAW_TEXT_INLINE`.
+
+### Register model and dispatch ABI
+
+| Register/address | TERSE ownership |
+| --- | --- |
+| `BC` | Threaded instruction pointer; points to the next execution cell or the current word's inline operand |
+| `SP=$C3E2` | Downward-growing 16-bit TERSE data stack; also the balanced native Z80 call/push stack |
+| `IX=$C400` | Downward-growing control stack for nested-thread return IPs and `BEGIN` loop addresses |
+| `IY=$0043` | Native-word continuation, normally `TERSE_DISPATCH` |
+| `RST $08` | Enter a nested inline thread through `TERSE_ENTER` |
+
+`TERSE_ENTER` receives control through `RST $08`. The RST instruction pushes
+the address of the inline thread on SP; `TERSE_ENTER` immediately pops that
+address into `BC`, so the TERSE data-stack depth is unchanged. The caller's
+previous `BC` is saved as a two-byte IX control cell. `TERSE_RETURN` restores
+that saved IP and removes the IX cell.
+
+Native application words enter after the dispatcher has advanced `BC` past
+their execution cell. A normal word returns with `JP (IY)`. The source emits
+the same tail instruction inside compact kernel words as:
+
+```asm
+DW      TERSE_DISPATCH_OPCODE   ; bytes FD E9 = JP (IY)
 ```
 
+The application-word contract is:
+
+- Preserve the advanced `BC` threaded IP, IX control state, IY continuation,
+  and entry SP depth.
+- Treat `A`, flags, `DE`, and `HL` as scratch. The dispatcher itself destroys
+  `A` and `HL` while fetching the next execution address.
+- Save and restore `BC` before using it as native workspace.
+- Restore `IY` after using it as an object pointer or explicit continuation.
+- Balance every native `CALL`, `PUSH`, and local data allocation before
+  dispatch resumes.
+
+`PULSE_COIN_COUNTER` and `CLEAR_GAME_STATE_AND_PLAYFIELD` deliberately accept
+either the TERSE dispatcher or a native continuation in `IY`.
+`START_SELECTION_AND_PROMPTS` temporarily saves `$0043` and uses an internal
+continuation while polling the coin counter. Interactive service mode sets IY
+to `$0277` before entering the common clear routine. The diagnostic
+`JP (IY)` at the end of the walking-bit test is also a native descriptor
+continuation, not a TERSE return.
+
+### Kernel control entries
+
+| Address | Source label | Function |
+| ---: | --- | --- |
+| `$0008` | `TERSE_ENTER` | Save caller BC on IX and enter the inline thread following `RST $08` |
+| `$0043` | `TERSE_DISPATCH` | Fetch a little-endian execution address through BC and jump to it |
+
+### Kernel words and inline formats
+
+Stack effects describe 16-bit TERSE data cells. `control:` describes IX cells.
+Every 16-bit inline value is little-endian.
+
+| Address | Source label | Stack effect | Inline bytes | Operation |
+| ---: | --- | --- | --- | --- |
+| `$0039` | `TERSE_RETURN` | `( control: return -- )` | None | Restore the caller's threaded IP from IX |
+| `$004A` | `TERSE_INLINE_BFETCH` | `( -- byte )` | `address16` | Read and zero-extend one byte through the inline address |
+| `$0052` | `TERSE_BFETCH` | `( address -- byte )` | None | Read and zero-extend one byte through a stacked address |
+| `$0059` | `TERSE_BSTORE` | `( value address -- )` | None | Store the low byte of `value` at `address` |
+| `$005E` | `TERSE_BEGIN` | `( control: -- begin )` | None | Save the address of the current `BEGIN` execution cell |
+| `$006E` | `TERSE_UNTIL` | `( flag -- ) ( control: begin -- )` | None | Repeat at `BEGIN` while `flag` is zero |
+| `$0081` | `TERSE_TRUE` | `( -- $FFFF )` | None | Push Boolean true |
+| `$0087` | `TERSE_LIT` | `( -- value )` | `value16` | Push a 16-bit literal |
+| `$0090` | `TERSE_BYTE_NOT` | `( value -- value' )` | None | Complement only the low byte; preserve the high byte |
+| `$0097` | `TERSE_ZERO_BRANCH` | `( flag -- )` | `target16` | Branch to `target` when zero; otherwise skip it |
+| `$00A8` | `TERSE_BRANCH` | `( -- )` | `target16` | Unconditional branch |
+
+`TERSE_BFETCH` is a complete resident word but no Sea Wolf II thread references
+it. All five byte reads in the control thread use `TERSE_INLINE_BFETCH`.
+
+### Native application words
+
+All application words have TERSE data-stack effect `( -- )`. The text word is
+the only application word with inline operands; it consumes
+`text16, y8, x8, size8`, advances `BC` by five bytes, and preserves that
+advanced IP across the native renderer call.
+
+| Address | Source label | Threaded role |
+| ---: | --- | --- |
+| `$0302` | `CLEAR_RAM_AND_LOWER_VIDEO` | Cold-start RAM and lower-screen clear |
+| `$0321` | `INITIALIZE_MACHINE` | IM 2, raster schedule, moving-boundary, and target-sequence setup |
+| `$0365` | `INITIALIZE_MAIN_STATE` | Native prelude followed by the nested initialization thread |
+| `$0385` | `RESET_RUNTIME_STATE` | Per-game state and playfield reset |
+| `$0397` | `CLEAR_GAME_STATE_AND_PLAYFIELD` | Shared reset body; TERSE or native-IY continuation |
+| `$03F6` | `START_SELECTION_AND_PROMPTS` | Attract prompts, credit pricing, and start-button selection |
+| `$0544` | `CONTROL_THREAD_WORD` | Composite word entering the control thread at `$0545` |
+| `$0593` | `FINALIZE_SCORES_AND_DRAW_GAME_OVER` | Final-score/high-score resolution plus localized nested text thread |
+| `$0613` | `PROCESS_SHIP_HIT` | Consume target hit events, score, lamps, overlays, and bonuses |
+| `$0711` | `REFRESH_DIRTY_PLAYER_SCORES` | Redraw changed station scores |
+| `$0735` | `CHECK_PATROL_END_OR_EXTENDED_PLAY` | Award extension or drain torpedoes and end the patrol |
+| `$07C4` | `UPDATE_GAME_TIME_DISPLAY` | Redraw the BCD clock and service station reloads |
+| `$08A7` | `ACTIVATE_TARGET_LANES` | Populate the two surface-target lanes |
+| `$09C1` | `POLL_TORPEDO_FIRE` | Poll both stations and allocate fire-edge torpedoes |
+| `$0ACB` | `UPDATE_SONAR_SEQUENCE` | Advance the alternating sonar cadence |
+| `$0AF4` | `ERASE_EXPIRED_HIT_SCORES` | Retire hit-score overlays and redraw timed bonus panels |
+| `$0BDF` | `INITIALIZE_OBJECT_POOLS` | Seed attract-mode target and torpedo records |
+| `$0C1A` | `UPDATE_NEW_HIGH_SCORE_MESSAGE` | Blink the localized congratulations message |
+| `$0C56` | `PULSE_COIN_COUNTER` | Consume queued coins, pulse the counter, and add credits |
+| `$0C6E` | `TERSE_DRAW_TEXT_INLINE` | Consume five inline bytes and call the selected text renderer |
+| `$0C99` | `DRAW_HIGH_SCORE_WORD` | TERSE wrapper around the native high-score renderer |
+
+`INITIALIZE_MAIN_STATE`, `CONTROL_THREAD_WORD`, and
+`FINALIZE_SCORES_AND_DRAW_GAME_OVER` are composite native words. Each performs
+native work and uses `RST $08` to enter a nested inline thread; the matching
+`TERSE_RETURN` restores its caller's BC.
+
+### Initial thread `$02F0-$0301`
+
+The first two cells execute once. The game-cycle cells then loop forever.
+Cold-start RAM clearing makes the first pass through game-over finalization a
+harmless zero-score pass.
+
+| Cell | Word or operand | Control effect |
+| ---: | --- | --- |
+| `$02F0` | `CLEAR_RAM_AND_LOWER_VIDEO` | Clear all work RAM and the lower status/video area |
+| `$02F2` | `INITIALIZE_MACHINE` | Initialize interrupts, schedules, and target sequencing |
+| `$02F4` | `FINALIZE_SCORES_AND_DRAW_GAME_OVER` | Start `INITIAL_GAME_LOOP`; close the preceding patrol |
+| `$02F6` | `INITIALIZE_MAIN_STATE` | Clear top-level state and run nested initialization |
+| `$02F8` | `START_SELECTION_AND_PROMPTS` | Wait for a valid credited start |
+| `$02FA` | `RESET_RUNTIME_STATE` | Prepare the selected one- or two-player patrol |
+| `$02FC` | `CONTROL_THREAD_WORD` | Run the patrol/control loop to completion |
+| `$02FE` | `TERSE_BRANCH` | Consume the target at `$0300` |
+| `$0300` | `INITIAL_GAME_LOOP` | Branch back to `$02F4` |
+
+### Nested initialization thread `$036F-$0384`
+
+`INITIALIZE_MAIN_STATE` enters this thread after clearing active-player and
+sound-orientation state.
+
+| Cell/range | Word or operand | Effect |
+| ---: | --- | --- |
+| `$036F` | `CLEAR_GAME_STATE_AND_PLAYFIELD` | Clear gameplay state and draw station status |
+| `$0371` | `TERSE_DRAW_TEXT_INLINE` | Draw the HIGH SCORE label |
+| `$0373-$0377` | `TEXT_HIGH_SCORE`, `$02,$4A,$00` | Text pointer, Y, X, normal-size flag |
+| `$0378` | `DRAW_HIGH_SCORE_WORD` | Draw the stored packed-BCD high score |
+| `$037A` | `TERSE_DRAW_TEXT_INLINE` | Draw the SEA WOLF II title |
+| `$037C-$0380` | `TEXT_SEAWOLF_II`, `$48,$3E,$00` | Text pointer, Y, X, normal-size flag |
+| `$0381` | `CONTROL_THREAD_WORD` | Run the no-player attract/control loop until credit arrival |
+| `$0383` | `TERSE_RETURN` | Restore the outer initial-thread IP |
+
+### Control thread `$0545-$0592`
+
+`CONTROL_THREAD_WORD` enters at `$0545`. `TERSE_BEGIN` and `TERSE_UNTIL`
+define one balanced loop. Every branch converges at `control_continue` before
+the exit flag is tested.
+
+| Path | Condition and execution sequence |
+| --- | --- |
+| Patrol transition | If `PATROL_COMPLETE_FLAG` is nonzero, run `CHECK_PATROL_END_OR_EXTENDED_PLAY` |
+| Active play | If `ACTIVE_PLAYER_COUNT` is nonzero, erase expired overlays, process hits, refresh scores, and advance sonar |
+| Active patrol | If the low-byte complement of `PATROL_COMPLETE_FLAG` is nonzero, update the clock/reloads, activate targets, and poll fire |
+| No player | Initialize attract-mode object pools, blink the new-high-score message, and test `CREDIT_COUNT` |
+| Credit arrival | Push true and the address of `PATROL_COMPLETE_FLAG`, then store `$FF` through `TERSE_BSTORE` |
+| Common tail | Pulse the coin counter, fetch `CONTROL_LOOP_EXIT_FLAG`, and repeat through `TERSE_UNTIL` while it is zero |
+| Exit | `TERSE_RETURN` restores the caller's threaded IP |
+
+The exact control-transfer cells are:
+
+| Cell/range | TERSE operation |
+| ---: | --- |
+| `$0545` | `TERSE_BEGIN` |
+| `$0547-$054E` | Fetch patrol-complete flag; zero-branch to `$0551` |
+| `$054F` | `CHECK_PATROL_END_OR_EXTENDED_PLAY` |
+| `$0551-$0558` | Fetch active-player count; zero-branch to `$0575` |
+| `$0559-$055F` | Four active-play maintenance words |
+| `$0561-$056A` | Fetch patrol-complete flag, low-byte NOT, zero-branch to `$0589` |
+| `$056B-$0574` | Clock/reload, target, fire words; branch to `$0589` |
+| `$0575-$0580` | Attract-pool/high-score words; fetch credits; zero-branch to `$0589` |
+| `$0581-$0588` | `TRUE`, `LIT PATROL_COMPLETE_FLAG`, `BSTORE` |
+| `$0589-$0592` | Coin pulse, exit-flag fetch, `UNTIL`, `RETURN` |
+
+### Localized GAME OVER threads
+
+The final-score word selects one of three `RST $08` sites. Each nested thread
+has the same shape and differs only in the text pointer.
+
+| Language | Thread | Text pointer | Y/X/size operands | Return |
+| --- | ---: | ---: | ---: | ---: |
+| English | `$05F2` | `$05F4` → `TEXT_GAME_OVER_EN` | `$05F6-$05F8`: `$B4,$2C,$FF` | `$05F9` |
+| German | `$0600` | `$0602` → `TEXT_GAME_OVER_DE` | `$0604-$0606`: `$B4,$2C,$FF` | `$0607` |
+| French | `$060A` | `$060C` → `TEXT_GAME_OVER_FR` | `$060E-$0610`: `$B4,$2C,$FF` | `$0611` |
+
+Each thread executes `TERSE_DRAW_TEXT_INLINE`, consumes a five-byte inline
+text record, and executes `TERSE_RETURN` to restore the outer initial-thread
+IP. The native final-score word does not resume after `RST $08`.
+
+### Proven stack depths
+
+The maximum TERSE data-stack depth is **two 16-bit cells**. The no-player
+credit path reaches it with:
+
+```text
+TERSE_TRUE  -> one cell
+TERSE_LIT   -> two cells, SP=$C3DE
+TERSE_BSTORE -> zero cells
+```
+
+Every flag fetch is consumed by the following branch, so no other control path
+exceeds one cell. The stacked-address `TERSE_BFETCH` word is unused.
+
+The maximum IX control-stack depth is **three 16-bit cells**. It occurs during
+the initialization thread's nested control loop:
+
+| Operation | IX after allocation | Live control cells |
+| --- | ---: | ---: |
+| `INITIALIZE_MAIN_STATE` → `TERSE_ENTER` | `$C3FE` | Outer initial-thread return |
+| `CONTROL_THREAD_WORD` → `TERSE_ENTER` | `$C3FC` | Initialization-thread return |
+| `TERSE_BEGIN` | `$C3FA` | Control-loop begin address |
+
+`TERSE_UNTIL` removes the loop cell on every iteration before either repeating
+or exiting. The control thread's `TERSE_RETURN` then removes its nested return,
+and the initialization thread's `TERSE_RETURN` removes the outer return. A
+top-level control loop reaches two IX cells; a localized GAME OVER thread
+reaches one.
+
+These figures are TERSE language-stack depths. Native Z80 calls and interrupts
+use the same hardware SP for balanced return addresses and register frames, but
+they do not leave data cells live across dispatch.
+
+### Foreground and interrupt interaction
+
+The primary video interrupt saves `AF`, `BC`, `DE`, `HL`, `IX`, and `IY` before
+running frame service. The alternate raster interrupt touches only `AF` and
+`HL` and saves both. Each path restores the interrupted SP exactly. The primary
+handler enables the five lightweight raster interrupts to nest only after its
+initial schedule call has returned; TERSE's BC, IX, and IY state therefore
+survives every interrupt boundary.
+
+| State class | Foreground TERSE/native words | Frame/raster interrupt |
+| --- | --- | --- |
+| Object records `$C000-$C1C1` | Allocate records, consume hit events, score, and create torpedoes | Schedule motion, draw/erase, collide, set hit events, and retire records |
+| Sound/timing `$C1CB-$C1DA` | Load reload, bonus, torpedo, sonar, hit, dive, and coin timers | Pack output ports and decay every nonzero timer once per frame |
+| Game clock `$C1DB` | Read and render; set patrol-complete state at zero | Decrement packed BCD once per second |
+| Coin queue `$C207` | Consume events, pulse the mechanical counter, and increment credits | Debounce the coin input and enqueue rising edges |
+| Raster state `$C1FC-$C221` | Initialize schedule and motion records | Own schedule cursor, colors, vectors, scanlines, and moving-boundary updates |
+| TERSE control state | Own BC, IX, IY and persistent data cells | Preserve all live TERSE registers; use SP only for balanced interrupt frames |
+
+All five `RST $08` entry sites, all six threaded programs, all 11 kernel words,
+and all 21 application words are now accounted for. No unlabeled TERSE
+execution cell, inline address, native application word, or threaded code area
+remains in the ROM.
+
+## RAM and I/O ownership
+
+### Clear domains and overlays
+
+The physical work RAM is `$C000-$C3FF`.
+
+- Power-on initialization clears all 1,024 bytes.
+- The destructive service test writes and verifies the complete 1 KB range.
+- Per-game reset clears the 18 object records at `$C000-$C1C1` and timed/game
+  state at `$C1CB-$C1F7`.
+- `RESET_RUNTIME_STATE` separately writes zero to `$C20A`.
+- Scheduler cursors, high-score state, text state, credits, raster pointers,
+  and raster motion records persist until their owning code replaces them.
+
+The ROM-failure display uses `$C000-$C001` as a two-byte text buffer before
+normal object initialization. This is a phase-exclusive overlay of target
+record 0, not concurrent state.
+
+### Runtime map `$C000-$C221`
+
+| Range | Bytes | Owner and exact use |
+| ---: | ---: | --- |
+| `$C000-$C063` | 100 | Four 25-byte surface-target records at `$C000/$C019/$C032/$C04B`; `$C000-$C001` is the diagnostic text-buffer overlay |
+| `$C064-$C0F9` | 150 | Six 25-byte mine records at `$C064/$C07D/$C096/$C0AF/$C0C8/$C0E1` |
+| `$C0FA-$C1C1` | 200 | Eight 25-byte torpedo records; left/right records alternate from `$C0FA/$C113` |
+| `$C1C2-$C1C3` | 2 | Target scheduler cursor; persistent word, lazily wrapped to `$C000` when zero or at `$C04B` |
+| `$C1C4-$C1C5` | 2 | Mine scheduler cursor; persistent word, lazily wrapped to `$C064` when zero or at `$C0E1` |
+| `$C1C6-$C1C7` | 2 | Torpedo scheduler cursor; persistent word, lazily wrapped to `$C0FA` when zero or at `$C1A9` |
+| `$C1C8-$C1C9` | 2 | Unused gap; no field, pointer, or gameplay-range consumer; touched only by whole-RAM power-on clear/test |
+| `$C1CA` | 1 | `FRAME_WORK_GUARD_COUNTER`; counts nested/pending frame service and inhibits sound/object work during the Super Sub announcement |
+| `$C1CB` | 1 | Left reload timer |
+| `$C1CC` | 1 | Right reload timer during play; new-high-score blink timer while no player is active |
+| `$C1CD` | 1 | Sonar cadence timer |
+| `$C1CE-$C1CF` | 2 | Right and left four-hit bonus display timers |
+| `$C1D0-$C1D5` | 6 | Right mine/ship/torpedo and left mine/ship/torpedo timers packed onto port `$40` bits 5-0 |
+| `$C1D6-$C1D9` | 4 | Coin-counter pulse, left sonar, right sonar, and dive pan/trigger timing packed onto port `$41` |
+| `$C1DA` | 1 | 60-frame packed-BCD game-clock divider |
+| `$C1DB-$C1DC` | 2 | Current packed-BCD game time and last value drawn |
+| `$C1DD` | 1 | Text double-size flag |
+| `$C1DE-$C1E0` | 3 | Control-loop exit, patrol-complete, and awarded extended-patrol time |
+| `$C1E1` | 1 | Remaining scheduled sonar pings |
+| `$C1E2-$C1E6` | 5 | Left score low/high, redraw latch, consecutive-hit count, and accumulated bonus value |
+| `$C1E7-$C1EB` | 5 | Right score low/high, redraw latch, consecutive-hit count, and accumulated bonus value |
+| `$C1EC-$C1EE` | 3 | Left fire-edge latch, torpedoes remaining, and lamp output image |
+| `$C1EF-$C1F1` | 3 | Right fire-edge latch, torpedoes remaining, and lamp output image |
+| `$C1F2-$C1F5` | 4 | Right active/value and left active/value for four-hit bonus overlays |
+| `$C1F6` | 1 | Reset-only padding; cleared by the per-game `$C1CB-$C1F7` pass and never otherwise addressed outside whole-RAM clear/test |
+| `$C1F7` | 1 | Super Sub spawn count for the current patrol |
+| `$C1F8` | 1 | New-high-score/congratulations flag |
+| `$C1F9` | 1 | Debounced coin-input edge latch |
+| `$C1FA` | 1 | Port-`$41` XOR/control image: sample enable and dive-pan orientation; firing also restores bit 7 |
+| `$C1FB` | 1 | Active player count, zero/one/two |
+| `$C1FC-$C1FD` | 2 | Cursor for the current ROM raster-schedule record |
+| `$C1FE-$C202` | 5 | Text X low/high, Y low/high, and expansion color |
+| `$C203-$C207` | 5 | Start eligibility, selected credit cost, language, credits, and queued coin pulses |
+| `$C208-$C209` | 2 | Packed-BCD high score persistent across games |
+| `$C20A` | 1 | Explicit reset-only byte; `RESET_RUNTIME_STATE` writes zero, no live-state reader exists, and no other targeted write exists outside whole-RAM clear/test |
+| `$C20B-$C20C` | 2 | Cursor into the cyclic target-type table at `$0DC8-$0DD1` |
+| `$C20D-$C20E` | 2 | Base pointer of the selected color or monochrome raster schedule |
+| `$C20F` | 1 | Base scanline of the next armed raster record |
+| `$C210-$C211` | 2 | Optional pointer to the next boundary's four-byte motion state; zero means fixed line |
+| `$C212-$C215` | 4 | `$18` boundary phase timer, signed velocity, displacement low/high |
+| `$C216-$C219` | 4 | `$30` boundary phase timer, signed velocity, displacement low/high |
+| `$C21A-$C21D` | 4 | `$54` boundary phase timer, signed velocity, displacement low/high |
+| `$C21E-$C221` | 4 | `$84` boundary phase timer, signed velocity, displacement low/high |
+
+`$C20A`, `$C1F6`, and `$C1C8-$C1C9` have different write classes. `$C20A`
+has an explicit reset write. `$C1F6` is covered by a per-game range clear.
+`$C1C8-$C1C9` are touched only by the power-on whole-RAM clear and diagnostic.
+None has a live-state reader; the diagnostic still reads every byte while
+verifying the physical RAM.
+
+### Object-record ownership
+
+All 18 object records use the same 25-byte layout:
+
+| Offset | Field | Ownership |
+| ---: | --- | --- |
+| `$00` | `OBJECT_FLAGS` | Active, hit, boundary, ownership, and score-overlay flags |
+| `$01` | `OBJECT_TYPE` | Object class `$00-$08` |
+| `$02` | `OBJECT_TIMER` | Scheduler/animation delay |
+| `$03-$04` | `OBJECT_Y_ACCEL` | Signed 8.8 Y acceleration |
+| `$05-$06` | `OBJECT_Y_VELOCITY` | Signed 8.8 Y velocity |
+| `$07-$08` | `OBJECT_Y_POSITION` | Signed 8.8 Y position |
+| `$09` | `OBJECT_Y_MIN` | High-byte lower boundary |
+| `$0A-$0B` | `OBJECT_UNUSED_0A/0B` | Fixed-zero padding; clear/copy only, never read as fields |
+| `$0C-$0D` | `OBJECT_X_VELOCITY` | Signed 8.8 X velocity |
+| `$0E-$0F` | `OBJECT_X_POSITION` | Signed 8.8 X position |
+| `$10` | `OBJECT_UNUSED_10` | Fixed-zero padding; clear/copy only, never read as a field |
+| `$11` | `OBJECT_X_MAX` | High-byte right boundary |
+| `$12-$13` | `OBJECT_BITMAP_PTR` | Current bitmap descriptor pointer |
+| `$14` | `OBJECT_FUNCGEN_CONTROL` | Expand/flop mode plus computed shift |
+| `$15-$16` | `OBJECT_MAGIC_ADDR` | Previous Function Generator write-window address |
+| `$17` | `OBJECT_COLOR` | Port-`$19` expansion color pair |
+| `$18` | `OBJECT_ANIMATION_FRAME` | Bitmap-sequence index |
+
+Offsets `$0A`, `$0B`, and `$10` are resolved as unused structural padding.
+Every ROM template contains zero, record clearing writes zero, and no field
+consumer addresses these offsets directly or through an indexed walk.
+
+### Stack reserve and unassigned work RAM
+
+Normal code has no absolute RAM reference above `$C221`.
+
+| Range | Classification |
+| ---: | --- |
+| `$C222-$C3E1` | No named state. Reserved for the downward-growing Z80/TERSE data stack initialized with `SP=$C3E2`; the first pushed word occupies `$C3E0-$C3E1` |
+| `$C3E2-$C3F9` | Unaddressed gap between the initialized SP and the proven IX control-stack low-water mark |
+| `$C3FA-$C3FF` | Maximum live IX control-stack window: three cells, with `IX=$C400` before the first push |
+
+Both stacks grow downward and have no ROM bounds check. Static analysis proves
+that threaded data reaches at most two cells (`SP=$C3DE`) and IX control state
+reaches at most three cells (`IX=$C3FA`). Native Z80 calls, local pushes, and
+interrupt frames also use SP and are balanced before TERSE dispatch resumes.
+The unassigned space above `$C221` is stack capacity, not safe spare RAM.
+
+### Complete I/O ownership
+
+| Port | ROM access | Owner and meaning |
+| ---: | --- | --- |
+| `$00-$07` | Write | Color registers 0-7; diagnostics write all eight, raster service updates 4-7 |
+| `$08` | Write | Video mode bit 0. A hardware read would return and clear Function Generator intercept, but this ROM never reads it |
+| `$09` | Write | Color-split X in bits 0-5 and background color in bits 6-7 |
+| `$0A` | Write | Vertical-blank line |
+| `$0B` | Write | Diagnostic color-block transfer; the high I/O-address byte selects color register 0-7 during `OTIR` |
+| `$0C` | Write | Function Generator shift/rotate/expand/OR/XOR/flop control |
+| `$0D` | Write | IM 2 vector low byte; write also clears the pending IRQ |
+| `$0E` | Write | Interrupt enable/mode; write clears IRQ. Hardware readback is lightpen vertical feedback and is unused |
+| `$0F` | Write | Next interrupt scanline; write clears IRQ. Hardware readback is lightpen horizontal feedback and is unused |
+| `$10` | Read | Left station/P2 Gray handle bits 0-5 and fire bit 7; bit 6 unused |
+| `$11` | Read | Right station/P1 Gray handle bits 0-5, French contact bit 6, and fire bit 7 |
+| `$12` | Read | Coin bit 0, one-player start bit 1, two-player start bit 2, German contact bit 3 |
+| `$13` | Read | Operator switch bank S1 |
+| `$14-$18` | None | Unmapped for Sea Wolf II's discrete-sound configuration and not referenced by the ROM |
+| `$19` | Write | Function Generator expansion colors: zero-source color bits 0-1, one-source color bits 2-3 |
+| `$1A-$3F` | None | No ROM reference |
+| `$40` | Write | Rising-edge triggers: left torpedo/ship/mine bits 0-2; right torpedo/ship/mine bits 3-5 |
+| `$41` | Write | Dive pan bits 0-2, dive trigger bit 3, right/left sonar bits 4/5, coin counter bit 6, sample enable bit 7 |
+| `$42` | Write | Left station lamp latch: shots bits 0-3, READY/active-low RELOAD bit 4, hit bit 5 |
+| `$43` | Write | Right station lamp latch with the same bit layout |
+
+The hardware mapping mirrors `$40-$43` at `$48-$4B`, `$50-$53`, and
+`$58-$5B`; the ROM uses only the base ports. No other I/O address has a ROM
+reference.
+
+## Raster interrupt scheduler
+
+Machine initialization selects one of two schedules through DIP-switch port
+`$13`, bit 6. Each schedule contains six 10-byte records:
+
+```text
+scanline, unused_01, color4, color5, color6, color7,
+IM2 handler word for the next record, motion-state word for the next record
+```
+
+Record byte `$01` is conclusively unused. `ADVANCE_INTERRUPT_SCHEDULE`
+increments across it without loading it, and all twelve instances are zero.
+The extra `$FF` after the color-schedule terminator is unreachable alignment
+fill. All four bytes of each RAM motion state are live; none is reserved.
+
+The scanlines execute in this order. The handler and motion state are selected
+by the preceding record:
+
+| Base scanline | Handler | Motion state |
+| ---: | --- | ---: |
+| `$84` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C21E` |
+| `$D7` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | none |
+| `$0C` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | none |
+| `$18` | `VIDEO_INTERRUPT_HANDLER` | `$C212` |
+| `$30` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C216` |
+| `$54` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C21A` |
+
+The `$0C` record selects `VIDEO_INTERRUPT_HANDLER` for the following `$18`
+boundary. That `$18` interrupt runs the complete frame service: sound output,
+object-pool updates, timer decay, game-time maintenance, and coin-input
+handling. The other five interrupts only advance palette, vector, line, and
+split-motion state. After advancing the schedule, the frame handler re-enables
+interrupts so the lightweight raster handlers can nest while the frame workload
+continues.
+
+`ADVANCE_INTERRUPT_SCHEDULE` writes color registers 5-7, selects the next IM 2
+handler through the record's embedded vector word, arms the following scanline,
+and preloads its color-4 value into `A'`. Both interrupt entries execute a
+90-T-state calibrated delay before writing color register 4.
+
+The two schedules use different palette values:
+
+| Schedule | Color 4 sequence | Constant colors 5/6/7 |
+| --- | --- | --- |
+| `$19D8` | `$DC,$1C,$D8,$D9,$DA,$DB` | `$77,$58,$00` |
+| `$1A16` | `$00,$01,$00,$00,$00,$00` | `$03,$07,$05` |
+
+Each four-byte motion state contains a phase timer, signed velocity, and 8.8
+scanline displacement. Initial phase/velocity pairs are `$04/$04`, `$18/$08`,
+`$2C/$10`, and `$40/$20` for base lines `$18`, `$30`, `$54`, and `$84`.
+Each velocity reverses after `$50` visits. The signed high displacement byte is
+added to the next record's base scanline before port `$0F` is rewritten.
 
 ## Cabinet inputs, DIP switches, and station ownership
 
@@ -553,31 +998,6 @@ always positive (`+$0013` through `+$0070`); right dX is zero or negative
 That fixed positive residual proves the velocity tables are calibrated
 near-symmetrically, not generated by exact sign reversal.
 
-## Remaining raw data
-
-No reachable native Z80 remains encoded as `DB`.
-
-| Classification | Regions | Bytes |
-| --- | ---: | ---: |
-| TERSE inline operands | 5 | 15 |
-| Lookup, property, and pointer tables | 9 | 350 |
-| Graphics, text, and diagnostic patterns | 9 | 2,317 |
-| Padding and unused ROM | 1 | 76 |
-| Uncertain mixed role | 1 | 1 |
-| **Total** | **25** | **2,759** |
-
-The graphics audit found no other complete unreferenced bitmap descriptors.
-The six full-mask font slots at `$1203-$123E` are mapper-addressable but unused
-by every ROM string. The inter-descriptor zero gaps are not assets.
-
-The uncertain byte is `$8E` at `$1385`. It is not referenced as data, is not
-reachable from adjacent native code, and is too small to classify as graphics.
-`$1FB4-$1FFE` is ROM-tail fill; `$1FFF` is the final block's checksum adjustment.
-
-The remaining `DB` regions are intentional data encodings. Named RAM cells,
-hardware ports, bitmap addresses, and prompt-string pointers are symbolic at
-their use sites.
-
 ## Object types
 
 `OBJECT_TYPE` is byte 1 of every 25-byte object record. The complete type map
@@ -856,97 +1276,6 @@ selects the left station. The stored high score changes only when the candidate
 is strictly greater. A new record sets `NEW_HIGH_SCORE_FLAG`, and the localized
 congratulations message toggles draw/erase color every `$1E` video frames.
 
-## TERSE
-
-Sea Wolf II uses a direct-threaded TERSE engine. Threaded programs contain
-little-endian execution addresses and inline operands. Native Z80 routines can
-serve as TERSE words when they finish with `JP (IY)`.
-
-### Engine state
-
-| Register/address | Function |
-| --- | --- |
-| `BC` | Threaded instruction pointer |
-| `SP`, initialized to `$C3E2` | Downward-growing data stack |
-| `IX`, initialized to `$C400` | Downward-growing return/control stack |
-| `IY`, initialized to `$0043` | Address of `TERSE_DISPATCH` |
-| `RST $08` | Enter an inline threaded program through `TERSE_ENTER` |
-
-`TERSE_ENTER` saves the caller's current `BC` on the IX stack and uses the Z80
-return address following `RST $08` as the new threaded instruction pointer.
-`TERSE_DISPATCH` fetches a 16-bit address through `BC` and jumps to it.
-`TERSE_RETURN` restores the prior threaded instruction pointer from IX.
-
-### Recovered words
-
-| Address | Source label | Operation |
-| ---: | --- | --- |
-| `$0039` | `TERSE_RETURN` | Return from the current threaded program |
-| `$004A` | `TERSE_INLINE_BFETCH` | Fetch a byte through the following inline address |
-| `$0052` | `TERSE_BFETCH` | `( address -- byte )` |
-| `$0059` | `TERSE_BSTORE` | `( value address -- )`, storing the low byte |
-| `$005E` | `TERSE_BEGIN` | Save the current threaded cell on the IX control stack |
-| `$006E` | `TERSE_UNTIL` | `( flag -- )`, repeat at `BEGIN` while zero |
-| `$0081` | `TERSE_TRUE` | Push `$FFFF` |
-| `$0087` | `TERSE_LIT` | Push the following inline 16-bit value |
-| `$0090` | `TERSE_BYTE_NOT` | Complement the low byte of the top stack value |
-| `$0097` | `TERSE_ZERO_BRANCH` | `( flag -- )`, branch to the inline address when zero |
-| `$00A8` | `TERSE_BRANCH` | Unconditional branch to the inline address |
-
-The initial thread at `$02F0` controls startup and the outer game loop. The
-native entry at `$0544` enters the structured control thread at `$0545`, which
-coordinates game state, object creation, hit processing, sonar, firing, and
-coin handling. The nested initialization thread at `$036F-$0384` is expressed
-as named execution cells. Its six Y/X/size operand bytes remain explicit data.
-
-## Raster interrupt scheduler
-
-Machine initialization selects one of two schedules through DIP-switch port
-`$13`, bit 6. Each schedule contains six 10-byte records:
-
-```text
-scanline, reserved, color4, color5, color6, color7,
-IM2 handler word for the next record, motion-state word for the next record
-```
-
-The scanlines execute in this order. The handler and motion state are selected
-by the preceding record:
-
-| Base scanline | Handler | Motion state |
-| ---: | --- | ---: |
-| `$84` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C21E` |
-| `$D7` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | none |
-| `$0C` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | none |
-| `$18` | `VIDEO_INTERRUPT_HANDLER` | `$C212` |
-| `$30` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C216` |
-| `$54` | `ALTERNATE_RASTER_INTERRUPT_HANDLER` | `$C21A` |
-
-The `$0C` record selects `VIDEO_INTERRUPT_HANDLER` for the following `$18`
-boundary. That `$18` interrupt runs the complete frame service: sound output,
-object-pool updates, timer decay, game-time maintenance, and coin-input
-handling. The other five interrupts only advance palette, vector, line, and
-split-motion state. After advancing the schedule, the frame handler re-enables
-interrupts so the lightweight raster handlers can nest while the frame workload
-continues.
-
-`ADVANCE_INTERRUPT_SCHEDULE` writes color registers 5-7, selects the next IM 2
-handler through the record's embedded vector word, arms the following scanline,
-and preloads its color-4 value into `A'`. Both interrupt entries execute a
-90-T-state calibrated delay before writing color register 4.
-
-The two schedules use different palette values:
-
-| Schedule | Color 4 sequence | Constant colors 5/6/7 |
-| --- | --- | --- |
-| `$19D8` | `$DC,$1C,$D8,$D9,$DA,$DB` | `$77,$58,$00` |
-| `$1A16` | `$00,$01,$00,$00,$00,$00` | `$03,$07,$05` |
-
-Each four-byte motion state contains a phase timer, signed velocity, and 8.8
-scanline displacement. Initial phase/velocity pairs are `$04/$04`, `$18/$08`,
-`$2C/$10`, and `$40/$20` for base lines `$18`, `$30`, `$54`, and `$84`.
-Each velocity reverses after `$50` visits. The signed high displacement byte is
-added to the next record's base scanline before port `$0F` is rewritten.
-
 ## Discrete-sound control
 
 The video interrupt converts the ten frame-timed bytes at `$C1D0-$C1D9` into
@@ -980,10 +1309,36 @@ The source follows each producer back to its gameplay event:
   the mechanical coin counter rather than audio.
 - `UPDATE_DISCRETE_SOUND` packs the timers and writes ports `$40` and `$41`.
 
+## Remaining raw data
+
+No reachable native Z80 remains encoded as `DB`.
+
+| Classification | Regions | Bytes |
+| --- | ---: | ---: |
+| TERSE inline operands | 5 | 15 |
+| Lookup, property, and pointer tables | 9 | 350 |
+| Graphics, text, and diagnostic patterns | 9 | 2,317 |
+| Padding and unused ROM | 1 | 76 |
+| Uncertain mixed role | 1 | 1 |
+| **Total** | **25** | **2,759** |
+
+The graphics audit found no other complete unreferenced bitmap descriptors.
+The six full-mask font slots at `$1203-$123E` are mapper-addressable but unused
+by every ROM string. The inter-descriptor zero gaps are not assets.
+
+The uncertain byte is `$8E` at `$1385`. It is not referenced as data, is not
+reachable from adjacent native code, and is too small to classify as graphics.
+`$1FB4-$1FFE` is ROM-tail fill; `$1FFF` is the final block's checksum adjustment.
+
+The remaining `DB` regions are intentional data encodings. Named RAM cells,
+hardware ports, bitmap addresses, and prompt-string pointers are symbolic at
+their use sites.
+
 ## Build
 
-The project includes Bruce Norskog's zmac 1.3 for Linux and Windows. Both build
-scripts use the bundled assembler explicitly and place the assembled image at
+This source is built with Bruce Norskog's **zmac 1.3**. That version is the
+required project assembler on both Linux and Windows. Both build scripts invoke
+the bundled zmac 1.3 executable explicitly and place the assembled image at
 `src/seawolf2.bin`.
 
 Linux:

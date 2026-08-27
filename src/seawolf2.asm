@@ -1,9 +1,18 @@
 ;===============================================================================
 ; Sea Wolf II (Dave Nutting Associates / Midway, 1978)
 ;
+; Required assembler: zmac 1.3
+;
 ; ROM address space: $0000-$1FFF
-; TERSE IP: BC      data stack: SP      return stack: IX
-; Dispatcher: IY=$0043
+; TERSE IP: BC      data/native stack: SP      control stack: IX
+; Dispatcher continuation: IY=$0043
+;
+; TERSE cells are little-endian execution addresses.  Kernel and native
+; application words tail-dispatch through JP (IY); composite words use RST $08
+; to enter an inline nested thread and TERSE_RETURN to restore the prior BC.
+; Thread analysis proves a maximum two-cell TERSE data depth (SP=$C3DE) and a
+; maximum three-cell IX control depth (IX=$C3FA).  Native CALL/PUSH traffic and
+; interrupt register saves also use SP but are balanced independently.
 ;
 ;===============================================================================
 
@@ -54,6 +63,11 @@
 ; Inventory invariant: remaining DB byte count = 2,759.
 ;===============================================================================
 
+; Sea Wolf II I/O ownership.  Ports $00-$0F are the Astrocade data-chip
+; registers; $10-$13 are cabinet inputs; $19 is the Function Generator color
+; pair; $40-$43 are discrete sound, counter and station-lamp outputs.  The ROM
+; does not access $14-$18 or $1A-$3F.  Hardware reads at $08/$0E/$0F exist,
+; but this ROM uses those three addresses only as write registers.
 PORT_COLOR_0            EQU     $00
 PORT_COLOR_1            EQU     $01
 PORT_COLOR_2            EQU     $02
@@ -62,14 +76,14 @@ PORT_COLOR_4            EQU     $04
 PORT_COLOR_5            EQU     $05
 PORT_COLOR_6            EQU     $06
 PORT_COLOR_7            EQU     $07
-PORT_VIDEO_MODE         EQU     $08 ; write; reads return/clear FG intercept
-PORT_COLOR_SPLIT        EQU     $09
+PORT_VIDEO_MODE         EQU     $08 ; W mode bit 0; R returns/clears FG intercept
+PORT_COLOR_SPLIT        EQU     $09 ; split X in bits 0-5, background color 6-7
 PORT_VBLANK_LINE        EQU     $0A
-PORT_COLOR_BLOCK        EQU     $0B
+PORT_COLOR_BLOCK        EQU     $0B ; high I/O address bits select color 0-7
 PORT_FUNCGEN_CONTROL    EQU     $0C
-PORT_INTERRUPT_VECTOR   EQU     $0D
-PORT_INTERRUPT_ENABLE   EQU     $0E
-PORT_INTERRUPT_LINE     EQU     $0F
+PORT_INTERRUPT_VECTOR   EQU     $0D ; IM 2 vector low byte; write clears IRQ
+PORT_INTERRUPT_ENABLE   EQU     $0E ; write clears IRQ; read is lightpen V
+PORT_INTERRUPT_LINE     EQU     $0F ; write clears IRQ; read is lightpen H
 PORT_EXPAND_COLOR       EQU     $19
 PORT_LEFT_STATION_HANDLE  EQU   $10
 PORT_RIGHT_STATION_HANDLE EQU   $11
@@ -79,6 +93,15 @@ PORT_SOUND_EVENTS       EQU     $40
 PORT_SOUND_CONTROL      EQU     $41
 PORT_LEFT_LAMPS         EQU     $42
 PORT_RIGHT_LAMPS        EQU     $43
+
+; $40 rising-edge sound triggers:
+;   bit 0 left torpedo, 1 left ship hit, 2 left mine hit,
+;   bit 3 right torpedo, 4 right ship hit, 5 right mine hit.
+; $41 ownership:
+;   bits 0-2 dive pan, bit 3 dive trigger, bit 4 right sonar,
+;   bit 5 left sonar, bit 6 mechanical coin counter, bit 7 sample enable.
+; Each station lamp latch uses bits 0-3 for torpedoes 4..1, bit 4 for READY
+; and active-low RELOAD, and bit 5 for the hit/explosion lamp.
 
 ; Cabinet/station ABI.  Logical player 1 occupies the right station and is the
 ; only station active in a one-player game.  Logical player 2 occupies the left
@@ -110,12 +133,32 @@ PLAYER_COUNT_ONE                EQU $01
 PLAYER_COUNT_TWO                EQU $02
 
 RAM_BASE                EQU     $C000
-TERSE_DATA_STACK        EQU     $C3E2
-TERSE_RETURN_STACK      EQU     $C400
+TERSE_DATA_STACK_TOP    EQU     $C3E2
+TERSE_DATA_STACK_LOW_WATER EQU  $C3DE       ; two live TERSE cells
+TERSE_CONTROL_STACK_TOP EQU     $C400
+TERSE_CONTROL_STACK_LOW_WATER EQU $C3FA     ; three live control cells
 
 VIDEO_RAM_BASE          EQU     $4000
 VIDEO_RAM_LIMIT         EQU     $8000
 WORK_RAM_LIMIT          EQU     $C400
+NAMED_RUNTIME_STATE_END EQU     $C222
+STACK_RESERVE_BASE      EQU     $C222
+TERSE_CONTROL_STACK_FIRST EQU   $C3FE
+
+; Work-RAM ownership, $C000-$C3FF
+;   $C000-$C063  four 25-byte surface-target records
+;   $C064-$C0F9  six 25-byte mine records
+;   $C0FA-$C1C1  eight 25-byte interleaved station-torpedo records
+;   $C1C2-$C1C7  three persistent scheduler cursor words
+;   $C1C8-$C1C9  unreferenced; touched only by whole-RAM clear/diagnostic
+;   $C1CA-$C1F7  frame guard, timers, game, score, station and bonus state
+;   $C1F8-$C221  persistent foreground, text and raster-scheduler state
+;   $C222-$C3E1  no absolute owner; downward-growing SP stack reserve
+;   $C3E2-$C3F9  gap between the initialized SP and proven IX low-water mark
+;   $C3FA-$C3FF  three live IX control cells at maximum TERSE nesting
+;
+; The power-on diagnostic destructively tests the complete $C000-$C3FF range.
+; Its ROM-failure text buffer overlays $C000-$C001 before object pools exist.
 
 ; Native text renderer state used by the power-on and interactive diagnostics.
 TEXT_X_POSITION_LO      EQU     $C1FE
@@ -132,7 +175,7 @@ LANGUAGE_SELECTION      EQU     $C205
 CREDIT_COUNT            EQU     $C206
 COIN_INPUT_QUEUE        EQU     $C207
 COIN_INPUT_EDGE_LATCH   EQU     $C1F9
-UNREFERENCED_RUNTIME_BYTE EQU   $C20A
+RESET_ONLY_RUNTIME_BYTE_C20A EQU $C20A
 TARGET_TYPE_SEQUENCE_CURSOR EQU $C20B
 
 START_FLAG_ONE_PLAYER   EQU     $02
@@ -291,6 +334,7 @@ RIGHT_BONUS_DISPLAY_ACTIVE      EQU $C1F2
 RIGHT_BONUS_DISPLAY_VALUE_BCD   EQU $C1F3
 LEFT_BONUS_DISPLAY_ACTIVE       EQU $C1F4
 LEFT_BONUS_DISPLAY_VALUE_BCD    EQU $C1F5
+RESET_ONLY_STATE_C1F6           EQU $C1F6
 SUPER_SUB_SPAWN_COUNT           EQU $C1F7
 NEW_HIGH_SCORE_FLAG             EQU $C1F8
 
@@ -321,13 +365,13 @@ OBJECT_Y_VELOCITY_HI        EQU $06
 OBJECT_Y_POSITION_LO        EQU $07
 OBJECT_Y_POSITION_HI        EQU $08
 OBJECT_Y_MIN                EQU $09
-OBJECT_RESERVED_0A          EQU $0A
-OBJECT_RESERVED_0B          EQU $0B
+OBJECT_UNUSED_0A            EQU $0A
+OBJECT_UNUSED_0B            EQU $0B
 OBJECT_X_VELOCITY_LO        EQU $0C
 OBJECT_X_VELOCITY_HI        EQU $0D
 OBJECT_X_POSITION_LO        EQU $0E
 OBJECT_X_POSITION_HI        EQU $0F
-OBJECT_RESERVED_10          EQU $10
+OBJECT_UNUSED_10            EQU $10
 OBJECT_X_MAX                EQU $11
 OBJECT_BITMAP_PTR_LO        EQU $12
 OBJECT_BITMAP_PTR_HI        EQU $13
@@ -337,10 +381,10 @@ OBJECT_MAGIC_ADDR_HI        EQU $16
 OBJECT_COLOR                EQU $17
 OBJECT_ANIMATION_FRAME      EQU $18
 
-; $0A, $0B and $10 are touched only by whole-record clear/copy operations.
-; No constructor, updater, renderer or collision path reads or writes them as
-; fields, so they remain explicitly reserved rather than receiving speculative
-; meanings.
+; $0A, $0B and $10 are unused padding.  Every ROM template supplies zero;
+; CLEAR_OBJECT_RECORD and whole-record pool clearing/copying preserve zero.
+; No constructor, updater, renderer, collision path or indirect field walk
+; reads them, and no field write can make them nonzero.
 ;
 ; OBJECT_FUNCGEN_CONTROL holds the port-$0C mode.  Constructors seed expand
 ; and optional flop; MAP_COORDINATES_TO_MAGIC_ADDRESS replaces bits 0-1 with
@@ -456,9 +500,10 @@ TORPEDO_FRAME_FAR_MIN_Y     EQU $00
 TARGET_SCHEDULER_CURSOR     EQU $C1C2
 MINE_SCHEDULER_CURSOR       EQU $C1C4
 TORPEDO_SCHEDULER_CURSOR    EQU $C1C6
+UNUSED_SCHEDULER_GAP        EQU $C1C8       ; $C1C8-$C1C9, whole-RAM operations only
 
 ; Raster-interrupt scheduler state.  Each ROM schedule record is ten bytes:
-; scanline, reserved byte, colors 4-7, then the IM2 vector and motion-state
+; scanline, unused byte, colors 4-7, then the IM2 vector and motion-state
 ; pointers used for the following schedule record.
 INTERRUPT_SCHEDULE_CURSOR   EQU $C1FC
 INTERRUPT_SCHEDULE_BASE     EQU $C20D
@@ -473,6 +518,21 @@ RASTER_MOTION_STATE_3       EQU $C21E
 RASTER_SCHEDULE_RECORD_SIZE EQU $0A
 RASTER_SCHEDULE_END         EQU $FF
 RASTER_MOTION_PERIOD        EQU $50
+RASTER_RECORD_SCANLINE      EQU $00
+RASTER_RECORD_UNUSED_01     EQU $01
+RASTER_RECORD_COLOR_4       EQU $02
+RASTER_RECORD_COLOR_5       EQU $03
+RASTER_RECORD_COLOR_6       EQU $04
+RASTER_RECORD_COLOR_7       EQU $05
+RASTER_RECORD_HANDLER_LO    EQU $06
+RASTER_RECORD_HANDLER_HI    EQU $07
+RASTER_RECORD_MOTION_LO     EQU $08
+RASTER_RECORD_MOTION_HI     EQU $09
+
+RASTER_MOTION_PHASE_TIMER   EQU $00
+RASTER_MOTION_VELOCITY      EQU $01
+RASTER_MOTION_OFFSET_LO     EQU $02
+RASTER_MOTION_OFFSET_HI     EQU $03
 
 ; Frame-timed discrete-sound producers.  The interrupt handler treats every
 ; nonzero byte as an asserted line and decrements the timers at 60 Hz.
@@ -489,7 +549,7 @@ SOUND_RIGHT_SONAR_TIMER     EQU $C1D8       ; port $41 bit 4
 SOUND_DIVE_PAN_TIMER        EQU $C1D9       ; bits 7-5 -> port $41 bits 2-0;
                                                     ; bit 5 also triggers bit 3
 
-SOUND_FRAME_DIVIDER         EQU $C1CA
+FRAME_WORK_GUARD_COUNTER    EQU $C1CA
 SOUND_TIMER_BLOCK           EQU $C1CB       ; 16 timers, $C1CB-$C1DA
 LEFT_RELOAD_TIMER           EQU $C1CB
 RIGHT_RELOAD_TIMER          EQU $C1CC
@@ -500,7 +560,7 @@ LEFT_BONUS_DISPLAY_TIMER    EQU $C1CF
 SONAR_PING_COUNT            EQU $C1E1
 SOUND_DIVE_PAN_XOR          EQU $C1FA
 
-_DSPATCH                EQU     $E9FD           ; JP (IY), stored little-endian
+TERSE_DISPATCH_OPCODE   EQU     $E9FD           ; bytes FD E9: JP (IY)
 
                         ORG     $0000
 
@@ -513,15 +573,24 @@ COLD_START:             NOP
                         IN      A,(PORT_LEFT_STATION_HANDLE)
                         JP      WARM_START
 
+; Kernel ABI:
+;   BC  points to the next threaded cell or its inline operand.
+;   SP  holds 16-bit TERSE data cells and the balanced native Z80 call stack.
+;   IX  holds nested-thread return BC values and BEGIN loop addresses.
+;   IY  is the dispatch continuation and remains $0043 during normal play.
+;   A, flags and HL are destroyed by the dispatcher; native application words
+;   preserve BC/IX/IY and restore SP unless their documented word semantics
+;   deliberately change one of the two TERSE stacks.
+;
 ; ENTER is reached through RST $08.  It moves the caller's threaded instruction
-; pointer from BC to the downward-growing IX return stack, then makes the return
-; address following the RST instruction the new threaded instruction pointer.
+; pointer from BC to the downward-growing IX control stack, then makes the Z80
+; return address following the RST instruction the nested threaded IP.
 TERSE_ENTER:            DEC     IX
                         DEC     IX
                         LD      (IX+$01),B
                         LD      (IX+$00),C
                         POP     BC
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
 UNUSED_0015:            EX      (SP),HL
 
@@ -532,15 +601,15 @@ WARM_START:             LD      A,$01
                         LD      A,$CA
                         OUT     (PORT_VBLANK_LINE),A
                         LD      BC,INITIAL_THREAD
-                        LD      IX,TERSE_RETURN_STACK
+                        LD      IX,TERSE_CONTROL_STACK_TOP
                         LD      IY,TERSE_DISPATCH
-                        LD      SP,TERSE_DATA_STACK
+                        LD      SP,TERSE_DATA_STACK_TOP
                         IN      A,(PORT_DIP_SWITCHES)
                         AND     DIP_SERVICE_MODE_MASK
                         JP      Z,POWER_ON_SELF_TEST
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; Runtime for the TERSE return word (;).
+; ( control: return -- ) -- restore the caller's threaded IP from IX.
 TERSE_RETURN:           LD      C,(IX+$00)
                         LD      B,(IX+$01)
                         INC     IX
@@ -555,7 +624,7 @@ TERSE_DISPATCH:         LD      A,(BC)
                         LD      H,A
                         JP      (HL)
 
-; Fetch a byte through an address stored inline in the threaded stream.
+; ( -- byte ) [inline: address16] -- zero-extend an addressed byte.
 TERSE_INLINE_BFETCH:    LD      A,(BC)
                         INC     BC
                         LD      L,A
@@ -564,30 +633,31 @@ TERSE_INLINE_BFETCH:    LD      A,(BC)
                         LD      H,A
                         JR      TERSE_BFETCH_BODY
 
-; B@ -- fetch a byte through an address supplied on the data stack.
+; ( address -- byte ) -- zero-extend the addressed byte.  No ROM thread calls
+; this stacked-address form; the inline-address entry above is used five times.
 TERSE_BFETCH:           POP     HL
 TERSE_BFETCH_BODY:      LD      E,(HL)
                         LD      D,$00
                         PUSH    DE
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; B! -- store the low byte of a value through a stacked address.
+; ( value address -- ) -- store the low byte of value at address.
 TERSE_BSTORE:           POP     HL
                         POP     DE
                         LD      (HL),E
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; BEGIN runtime -- save the address of the current threaded cell on the IX
-; control stack.  TERSE_UNTIL consumes this address.
+; ( -- ) ( control: -- begin ) -- save the address of this BEGIN execution
+; cell on IX.  TERSE_UNTIL consumes the saved address every iteration.
 TERSE_BEGIN:            DEC     IX
                         DEC     IX
                         LD      HL,$FFFE
                         ADD     HL,BC
                         LD      (IX+$00),L
                         LD      (IX+$01),H
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; UNTIL runtime -- repeat at the saved BEGIN cell while the flag is zero.
+; ( flag -- ) ( control: begin -- ) -- repeat at BEGIN while flag is zero.
 TERSE_UNTIL:            LD      D,(IX+$01)
                         LD      E,(IX+$00)
                         INC     IX
@@ -598,14 +668,14 @@ TERSE_UNTIL:            LD      D,(IX+$01)
                         JR      NZ,TERSE_UNTIL_DONE
                         LD      B,D
                         LD      C,E
-TERSE_UNTIL_DONE:       DW      _DSPATCH
+TERSE_UNTIL_DONE:       DW      TERSE_DISPATCH_OPCODE
 
-; Boolean true.
+; ( -- $FFFF ) -- Boolean true.
 TERSE_TRUE:             LD      HL,$FFFF
                         PUSH    HL
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; LIT -- push the following 16-bit threaded value.
+; ( -- value ) [inline: value16] -- push a 16-bit literal.
 TERSE_LIT:              LD      A,(BC)
                         LD      L,A
                         INC     BC
@@ -613,18 +683,18 @@ TERSE_LIT:              LD      A,(BC)
                         LD      H,A
                         INC     BC
                         PUSH    HL
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; Byte-sized logical complement used by early Sea Wolf II control code.
+; ( value -- value' ) -- complement only the low byte; preserve the high byte.
 TERSE_BYTE_NOT:         POP     HL
                         LD      A,L
                         CPL
                         LD      L,A
                         PUSH    HL
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; 0BRANCH -- branch to the following inline address when the flag is zero;
-; otherwise skip the inline address.
+; ( flag -- ) [inline: target16] -- branch when flag is zero; otherwise skip
+; the inline target.
 TERSE_ZERO_BRANCH:      POP     DE
                         LD      A,E
                         OR      D
@@ -635,19 +705,19 @@ TERSE_ZERO_BRANCH:      POP     DE
                         LD      A,(BC)
                         LD      B,A
                         LD      C,E
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 TERSE_ZERO_BRANCH_SKIP: INC     BC
                         INC     BC
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
-; BRANCH -- replace BC with the following inline address.
+; ( -- ) [inline: target16] -- unconditionally replace BC with target.
 TERSE_BRANCH:           LD      A,(BC)
                         LD      L,A
                         INC     BC
                         LD      A,(BC)
                         LD      B,A
                         LD      C,L
-                        DW      _DSPATCH
+                        DW      TERSE_DISPATCH_OPCODE
 
 ;-------------------------------------------------------------------------------
 ; $00B0: Power-on video and RAM test palettes and failure pattern
@@ -882,6 +952,8 @@ self_test_next_bit:     SLA     B
                         LD      A,C
                         AND     A
                         JR      NZ,SELF_TEST_DISPLAY_MEMORY_FAILURE
+; Here IY is a diagnostic descriptor whose first two bytes are a JR
+; continuation.  This JP (IY) is not a TERSE dispatch return.
                         JP      (IY)
 ; Preserve the live test registers in the primary set while the shadow set
 ; builds a full-screen failure pattern.  The accumulated bits in C then select
@@ -951,8 +1023,8 @@ SELF_TEST_ACCUMULATE_FAILURE:
 SELF_TEST_MODE_SELECT:
                         CP      INPUT_TWO_PLAYER_START_MASK
                         JP      NZ,CONVERGENCE_TEST
-                        LD      SP,TERSE_DATA_STACK
-                        LD      IX,TERSE_RETURN_STACK
+                        LD      SP,TERSE_DATA_STACK_TOP
+                        LD      IX,TERSE_CONTROL_STACK_TOP
                         LD      IY,SELF_TEST_INTERACTIVE
                         JP      CLEAR_GAME_STATE_AND_PLAYFIELD
 
@@ -1046,16 +1118,28 @@ convergence_halt:       IN      A,(PORT_LEFT_STATION_HANDLE)
 ;-------------------------------------------------------------------------------
 ; $02F0: Initial direct-threaded TERSE execution list
 ;-------------------------------------------------------------------------------
+; Native application-word ABI
+;   Entry: dispatcher has advanced BC past the word's execution cell.
+;   Exit:  JP (IY), normally to TERSE_DISPATCH at $0043.
+;   Must preserve: BC threaded IP, IX control state, IY continuation, and the
+;   entry SP depth.  A/flags, DE and HL are scratch.  A word may use BC or IY
+;   internally only after saving and restoring the TERSE value.
+;   Composite words INITIALIZE_MAIN_STATE, CONTROL_THREAD_WORD and the three
+;   localized GAME OVER paths use RST $08/TERSE_RETURN to balance IX nesting.
+;
+; The first two cells run once.  INITIAL_GAME_LOOP then finalizes the preceding
+; scores, constructs the attract/start state, runs one patrol, and branches
+; back.  On cold start the zeroed scores make the first finalization harmless.
 INITIAL_THREAD:
                         DW      CLEAR_RAM_AND_LOWER_VIDEO
                         DW      INITIALIZE_MACHINE
-initial_loop:           DW      FINALIZE_SCORES_AND_DRAW_GAME_OVER
+INITIAL_GAME_LOOP:      DW      FINALIZE_SCORES_AND_DRAW_GAME_OVER
                         DW      INITIALIZE_MAIN_STATE
                         DW      START_SELECTION_AND_PROMPTS
                         DW      RESET_RUNTIME_STATE
                         DW      CONTROL_THREAD_WORD
                         DW      TERSE_BRANCH
-                        DW      initial_loop
+                        DW      INITIAL_GAME_LOOP
 
 ;-------------------------------------------------------------------------------
 ; $0302: Clear work RAM and the lower video/status area
@@ -1122,10 +1206,10 @@ interrupt_schedule_selected:
 ; $0355: Initial state for the four moving raster boundaries
 ;-------------------------------------------------------------------------------
 INITIAL_RAM_TEMPLATE:
-                        DB      $04,$04,$00,$00         ; $C212: base $18 phase/velocity/offset
-                        DB      $18,$08,$00,$00         ; $C216: base $30
-                        DB      $2C,$10,$00,$00         ; $C21A: base $54
-                        DB      $40,$20,$00,$00         ; $C21E: base $84
+                        DB      $04,$04,$00,$00         ; $C212: phase, velocity, offset lo/hi; base $18
+                        DB      $18,$08,$00,$00         ; $C216: phase, velocity, offset lo/hi; base $30
+                        DB      $2C,$10,$00,$00         ; $C21A: phase, velocity, offset lo/hi; base $54
+                        DB      $40,$20,$00,$00         ; $C21E: phase, velocity, offset lo/hi; base $84
 
 ;-------------------------------------------------------------------------------
 ; $0365: Clear top-level state and enter its TERSE thread
@@ -1141,15 +1225,22 @@ INITIALIZE_MAIN_STATE:
 ; $036F: Nested initialization TERSE thread
 ;-------------------------------------------------------------------------------
 MAIN_INITIALIZATION_THREAD:
-                        DW      CLEAR_GAME_STATE_AND_PLAYFIELD
+main_init_clear:        DW      CLEAR_GAME_STATE_AND_PLAYFIELD
+main_init_high_score_label:
                         DW      TERSE_DRAW_TEXT_INLINE
+main_init_high_score_operands:
                         DW      TEXT_HIGH_SCORE
                         DB      $02,$4A,$00             ; Y=$02, X=$4A, normal size
+main_init_high_score_value:
                         DW      DRAW_HIGH_SCORE_WORD
+main_init_title:
                         DW      TERSE_DRAW_TEXT_INLINE
+main_init_title_operands:
                         DW      TEXT_SEAWOLF_II
                         DB      $48,$3E,$00             ; Y=$48, X=$3E, normal size
+main_init_control:
                         DW      CONTROL_THREAD_WORD
+main_init_return:
                         DW      TERSE_RETURN
 
 ;-------------------------------------------------------------------------------
@@ -1157,8 +1248,9 @@ MAIN_INITIALIZATION_THREAD:
 ;-------------------------------------------------------------------------------
 RESET_RUNTIME_STATE:
                         XOR     A
-; $C20A has no other reference in the ROM; its reset is retained explicitly.
-                        LD      (UNREFERENCED_RUNTIME_BYTE),A
+; $C20A is an explicit reset-only byte.  Outside the whole-RAM clear/test, no
+; live-state path reads it and this is its only targeted write.
+                        LD      (RESET_ONLY_RUNTIME_BYTE_C20A),A
                         LD      DE,$08C0
                         LD      HL,$77F0
 reset_lower_video:      LD      (HL),A
@@ -1168,12 +1260,16 @@ reset_lower_video:      LD      (HL),A
                         DEC     D
                         JR      NZ,reset_lower_video
 ; Normal game reset enters here by falling through from RESET_RUNTIME_STATE.
-; The interactive service test jumps here directly, using IY as its return.
+; The interactive service test jumps here directly with IY set to its native
+; continuation.  Normal TERSE entry retains IY=$0043, so the common JP (IY)
+; below satisfies both calling conventions.
 CLEAR_GAME_STATE_AND_PLAYFIELD:
                         LD      HL,RAM_BASE
                         XOR     A
                         PUSH    BC
                         LD      BC,$02C2
+; The asymmetric B/C loop clears exactly $01C2 bytes: $C000-$C1C1, covering
+; all 18 object records but not the three persistent scheduler cursor words.
 clear_object_state:     LD      (HL),A
                         INC     HL
                         DEC     C
@@ -1182,6 +1278,8 @@ clear_object_state:     LD      (HL),A
 
                         LD      HL,SOUND_TIMER_BLOCK
                         LD      B,$2D
+; Clear $C1CB-$C1F7.  $C1F6 is included but has no reader or independent
+; writer; it is reset-only padding between the bonus fields and spawn count.
 clear_timed_state:      LD      (HL),A
                         INC     HL
                         DJNZ    clear_timed_state
@@ -1244,6 +1342,9 @@ START_SELECTION_AND_PROMPTS:
                         LD      (START_ELIGIBILITY_FLAGS),A
                         LD      (START_CREDIT_COST),A
 
+; PULSE_COIN_COUNTER uses the native-word continuation ABI: IY may contain the
+; TERSE dispatcher or an explicit native continuation.  Preserve $0043 while
+; borrowing IY for this internal tail call.
 start_selection_loop:   PUSH    IY
                         LD      IY,start_prompt_after_coin_service
                         JP      PULSE_COIN_COUNTER
@@ -1453,8 +1554,16 @@ language_selected:      LD      A,B
 ;-------------------------------------------------------------------------------
 ; $0544: Native ENTER followed by an inline TERSE control thread
 ;-------------------------------------------------------------------------------
+; CONTROL_THREAD_WORD is a composite application word.  RST $08 saves its
+; caller's BC on IX and uses the following address as the nested thread IP.
 CONTROL_THREAD_WORD:
                         RST     $08
+CONTROL_THREAD:
+; BEGIN is the only loop-control cell.  Every path reaches control_continue,
+; where UNTIL consumes its IX entry.  The no-player credit path is the data-
+; stack high-water point: TRUE and LIT hold two cells before BSTORE consumes
+; both.  During nested initialization, ENTER + ENTER + BEGIN produces the IX
+; low-water mark at $C3FA.
 control_wait:           DW      TERSE_BEGIN
                         DW      TERSE_INLINE_BFETCH,PATROL_COMPLETE_FLAG
                         DW      TERSE_ZERO_BRANCH,control_no_state
@@ -1553,6 +1662,7 @@ store_new_high_score_flag:
                         CP      LANGUAGE_ENGLISH
                         JR      NZ,game_over_not_english
                         RST     $08
+GAME_OVER_ENGLISH_THREAD:
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_EN
                         DB      $B4,$2C,$FF            ; Y, X, double size
@@ -1560,11 +1670,13 @@ store_new_high_score_flag:
 game_over_not_english:  CP      LANGUAGE_GERMAN
                         JR      NZ,draw_game_over_french
                         RST     $08
+GAME_OVER_GERMAN_THREAD:
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_DE
                         DB      $B4,$2C,$FF            ; Y, X, double size
                         DW      TERSE_RETURN
 draw_game_over_french:  RST     $08
+GAME_OVER_FRENCH_THREAD:
                         DW      TERSE_DRAW_TEXT_INLINE
                         DW      TEXT_GAME_OVER_FR
                         DB      $B4,$2C,$FF            ; Y, X, double size
@@ -2579,6 +2691,8 @@ new_high_score_message_done:
 
 ; $C1D6 is adjacent to the sound timers but drives port-$41 bit 6, the coin
 ; counter output.  Each queued coin produces a ten-frame hardware pulse.
+; This word returns through IY, permitting normal TERSE dispatch and the
+; explicit continuation used by START_SELECTION_AND_PROMPTS.
 PULSE_COIN_COUNTER:
                         LD      DE,COIN_COUNTER_PULSE_TIMER
                         LD      A,(DE)
@@ -2714,12 +2828,12 @@ PUSH_BCD_DIGITS:        LD      D,A
 ; $0D02: Suspend object service and present the Super Sub warning
 ;-------------------------------------------------------------------------------
 ; Displays TEXT_SUPER and TEXT_SUB, waits $40 interrupts, clears the warning
-; rectangle, then releases SOUND_FRAME_DIVIDER so object service resumes.  The
-; lightweight raster interrupts continue while the frame object workload is
-; held.
+; rectangle, then releases FRAME_WORK_GUARD_COUNTER so object service resumes.
+; Timer decay, the game clock, coin input and lightweight raster interrupts
+; continue while the sound/object frame workload is held.
 SHOW_SUPER_SUB_ANNOUNCEMENT:
                         LD      A,$01
-                        LD      (SOUND_FRAME_DIVIDER),A
+                        LD      (FRAME_WORK_GUARD_COUNTER),A
                         LD      A,$3C
                         LD      (TEXT_X_POSITION_HI),A
                         LD      A,$4B
@@ -2750,7 +2864,7 @@ clear_super_sub_byte:   LD      (HL),A
                         ADD     HL,DE
                         DEC     C
                         JR      NZ,clear_super_sub_row
-                        LD      (SOUND_FRAME_DIVIDER),A
+                        LD      (FRAME_WORK_GUARD_COUNTER),A
                         RET
 
 ;-------------------------------------------------------------------------------
@@ -2943,10 +3057,10 @@ INITIAL_UPPER_WARSHIP_TEMPLATE:
                         DB      $00,$00                 ; Y acceleration, 8.8
                         DB      $00,$00                 ; Y velocity, 8.8
                         DB      $00,TARGET_LANE_UPPER_Y ; Y position $1A00
-                        DB      $00,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $00,$00,$00             ; Y minimum, unused $0A/$0B
                         DB      $80,$00                 ; X velocity +$0080
                         DB      $00,$00                 ; X position $0000
-                        DB      $00,$8C                 ; reserved $10, X maximum
+                        DB      $00,$8C                 ; unused $10, X maximum
                         DB      $00,$00                 ; bitmap selected on first update
                         DB      FUNCGEN_MODE_EXPAND     ; expand, forward direction
                         DB      $00,$00                 ; no prior Magic write address
@@ -2957,10 +3071,10 @@ INITIAL_LOWER_SUPER_SUB_TEMPLATE:
                         DB      $00,$00                 ; Y acceleration, 8.8
                         DB      $00,$00                 ; Y velocity, 8.8
                         DB      $00,TARGET_LANE_LOWER_Y ; Y position $3300
-                        DB      $00,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $00,$00,$00             ; Y minimum, unused $0A/$0B
                         DB      $80,$FF                 ; X velocity -$0080
                         DB      $00,$8C                 ; X position $8C00
-                        DB      $00,$9F                 ; reserved $10, X maximum
+                        DB      $00,$9F                 ; unused $10, X maximum
                         DB      $00,$00                 ; bitmap selected on first update
                         DB      FUNCGEN_MODE_EXPAND_FLOP ; expand + flop, reverse direction
                         DB      $00,$00                 ; no prior Magic write address
@@ -2971,10 +3085,10 @@ INITIAL_LEFT_TORPEDO_TEMPLATE:
                         DB      $06,$00                 ; Y acceleration +$0006
                         DB      $00,$FD                 ; Y velocity -$0300
                         DB      $00,$BE                 ; Y position $BE00
-                        DB      $23,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $23,$00,$00             ; Y minimum, unused $0A/$0B
                         DB      $00,$00                 ; X velocity supplied later
                         DB      $00,$20                 ; initial X position $2000
-                        DB      $00,$9F                 ; reserved $10, X maximum
+                        DB      $00,$9F                 ; unused $10, X maximum
                         DB      BITMAP_TORPEDO_NEAR_LO,BITMAP_TORPEDO_NEAR_HI
                         DB      FUNCGEN_MODE_EXPAND     ; expand, forward direction
                         DB      $00,$00                 ; no prior Magic write address
@@ -2985,10 +3099,10 @@ INITIAL_RIGHT_TORPEDO_TEMPLATE:
                         DB      $06,$00                 ; Y acceleration +$0006
                         DB      $00,$FD                 ; Y velocity -$0300
                         DB      $00,$BE                 ; Y position $BE00
-                        DB      $23,$00,$00             ; Y minimum, reserved $0A/$0B
+                        DB      $23,$00,$00             ; Y minimum, unused $0A/$0B
                         DB      $00,$00                 ; X velocity supplied later
                         DB      $00,$78                 ; initial X position $7800
-                        DB      $00,$9F                 ; reserved $10, X maximum
+                        DB      $00,$9F                 ; unused $10, X maximum
                         DB      BITMAP_TORPEDO_NEAR_LO,BITMAP_TORPEDO_NEAR_HI
                         DB      FUNCGEN_MODE_EXPAND     ; expand, forward direction
                         DB      $00,$00                 ; no prior Magic write address
@@ -4352,6 +4466,10 @@ UNCERTAIN_1385:
 ; A'.  The entry swaps that value into A, waits exactly 90 Z80 T-states, then
 ; changes color register 4 at the calibrated raster position.  The paired
 ; EX (SP),HL instructions preserve both HL and the interrupted return address.
+; The full handler saves BC, IX and IY before enabling nested raster service,
+; so an interrupt cannot alter the TERSE IP, control stack or dispatcher.  Both
+; interrupt paths use the foreground SP only for balanced hardware/register
+; frames and return at the exact interrupted stack depth.
 VIDEO_INTERRUPT_HANDLER:
                         EX      AF,AF'
                         EX      (SP),HL
@@ -4387,7 +4505,12 @@ video_interrupt_handler_body:
                         EI
                         ; Intentional input read; its value is discarded.
                         IN      A,(PORT_LEFT_STATION_HANDLE)
-                        LD      HL,SOUND_FRAME_DIVIDER
+; FRAME_WORK_GUARD_COUNTER is normally zero.  The first frame changes 0 to 1
+; and performs the full sound/object workload.  A nested full-frame interrupt
+; observes nonzero, increments the pending count, and skips to timer/clock/coin
+; service.  The outer frame drains pending work below.  Foreground code also
+; writes a nonzero value to inhibit the workload during the Super Sub message.
+                        LD      HL,FRAME_WORK_GUARD_COUNTER
                         LD      A,(HL)
                         INC     (HL)
                         OR      A
@@ -4451,7 +4574,7 @@ dive_trigger_ready:     XOR     (HL)
                         CALL    SERVICE_TORPEDO_POOL
                         CALL    SERVICE_TORPEDO_POOL
                         CALL    SERVICE_MINE_POOL
-                        LD      HL,SOUND_FRAME_DIVIDER
+                        LD      HL,FRAME_WORK_GUARD_COUNTER
                         DEC     (HL)
                         LD      A,(HL)
                         OR      A
@@ -5107,7 +5230,7 @@ SERVICE_MINE_POOL:      LD      HL,(MINE_SCHEDULER_CURSOR)
 ; the schedule and returns the cursor to the selected base.
 ADVANCE_INTERRUPT_SCHEDULE:
                         LD      HL,(INTERRUPT_SCHEDULE_CURSOR)
-                        INC     HL                      ; reserved
+                        INC     HL                      ; +$01 unused record byte
                         INC     HL                      ; color 4, written by ISR
                         INC     HL                      ; color 5
                         LD      A,(HL)
@@ -5563,8 +5686,13 @@ CLAMP_OBJECT_X_AND_FLAG_BOUNDARY:
 ; $19D8: Color-monitor raster schedule selected by S1-7
 ;-------------------------------------------------------------------------------
 ; Each record is:
-;   DB scanline, reserved, color4, color5, color6, color7
+;   DB scanline, unused_01, color4, color5, color6, color7
 ;   DW interrupt handler, optional raster-motion state
+;
+; Byte +$01 is physically present in all twelve records but is never read or
+; copied: ADVANCE_INTERRUPT_SCHEDULE increments over it.  Every instance is
+; zero.  The second $FF after the color terminator is alignment fill and is
+; also unreachable; the monochrome schedule begins at the following even byte.
 ;
 ; The scanline order crosses the hardware counter wrap: $84, $D7, $0C, $18,
 ; $30, $54.  The handler and motion words in each record configure the following
@@ -5589,7 +5717,7 @@ color_monitor_schedule_30:
 color_monitor_schedule_54:
                         DB      $54,$00,$DB,$77,$58,$00
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_3 ; next: $84
-                        DB      RASTER_SCHEDULE_END,$FF   ; second byte is table padding
+                        DB      RASTER_SCHEDULE_END,$FF   ; terminator, unreachable alignment fill
 
 ;-------------------------------------------------------------------------------
 ; $1A16: Black-and-white-monitor raster schedule selected by S1-7
@@ -5613,7 +5741,7 @@ monochrome_monitor_schedule_30:
 monochrome_monitor_schedule_54:
                         DB      $54,$00,$00,$03,$07,$05
                         DW      ALTERNATE_RASTER_INTERRUPT_HANDLER,RASTER_MOTION_STATE_3 ; next: $84
-                        DB      RASTER_SCHEDULE_END
+                        DB      RASTER_SCHEDULE_END       ; terminator; no padding required
 
 ;-------------------------------------------------------------------------------
 ; $1A53: Per-type bitmap and hit-animation pointer lists
