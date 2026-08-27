@@ -11,63 +11,141 @@ not describe that structure correctly.
 
 ## Current status
 
-- All four source ROMs match the canonical MAME CRC32 and SHA1 values.
-- `src/seawolf2.asm` assembles with zmac 1.3 into a byte-identical 8 KB
-  program image. zmac 1.3 is the required assembler for this project.
-- The generated `roms/seawolf2.zip` runs successfully in MAME 0.289.
-- A controlled title-string edit was tested in MAME, confirming that MAME was
-  executing the locally assembled ROM set.
-- The TERSE architecture is closed: all 11 kernel primitives, 21 native
-  application words, six threaded programs, inline operand formats, calling
-  conventions, register preservation, interrupt interaction, and maximum
-  data/control-stack depths are decoded and documented.
-- Power-on diagnostics are reconstructed as native Z80 and documented.
-- All 43 ten-byte font glyphs for character codes `$30-$5A`, title/status
-  strings, and the English, German, and French prompt tables are bounded and
-  labeled.
-- Machine initialization, credit/start selection, coinage paths, language
-  selection, prompt rendering, text rendering, and player-status rendering are
-  reconstructed as native Z80.
-- Cabinet handle/start/coin inputs, the complete S1 operator-switch matrix,
-  service-mode selection, and left/right station ownership are resolved.
-- The six-bit Gray-code handle conversion, MAME's 64-position remap, the
-  32-entry aim clamp, both station trajectories, fixed-point flight equations,
-  early X exits, perspective changes, and collision-lane timing are mapped.
-- Every live byte from `$C000-$C221`, all work-RAM clear domains, stack reserve,
-  object padding, reset-only cells, state aliases, raster records, and every
-  I/O port used by the ROM are assigned or formally classified.
-- A MAME 0.289 input-port error that prevents French prompt selection is
-  identified; the supplied driver patch corrects the French contact address.
-- The 25-byte object-record ABI, all three scheduler pools, object selection,
-  fixed-point movement, rendering, and the target/torpedo/mine handlers are
-  reconstructed as native Z80.
-- All nine object type IDs, their target classes, speeds, scores, bitmap lists,
-  hit animations, collision lanes, and torpedo perspective frames are mapped.
-- Torpedo, surface-target, mine, and Super Sub lifecycles are traced from
-  allocation through scheduling, movement, drawing, collision, scoring,
-  sound, animation, retirement, and reuse.
-- Both six-entry raster schedules, their IM 2 vector selection, the primary and
-  alternate interrupt handlers, and the four moving split-line states are fully
-  decoded.
-- The frame interrupt's discrete-sound output, timer decay, torpedo producers,
-  collision producers, sonar sequence, dive effect, and coin-counter pulse are
-  labeled and documented.
-- Collision geometry, station ownership, packed-BCD scoring, four-hit bonuses,
-  hit overlays, explosion timing, extended patrol, final-score/high-score
-  selection, and localized high-score indication are fully traced.
-- Verified RAM, I/O-port, Magic-RAM scratch, bitmap, and localized prompt
-  references use source symbols rather than raw addresses.
-- Function Generator control bits, expansion colors, write/read windows,
-  scratch expansion, shift flushing, flop-based reversal, OR composition,
-  object erasure, and collision display reads are fully traced.
-- All 26 referenced object bitmap descriptors are split into headers and rows
-  with inline 1bpp masks. Two additional descriptor-valid but unreferenced
-  assets, excluded row data, and inter-descriptor padding are also bounded.
-- Both 32-entry torpedo trajectory tables, the self-test pattern groups, and
-  both player-status graphics are split into labeled records and rows.
-- Every reachable native Z80 routine is expressed as assembly. The remaining
-  2,759 `DB` bytes are verified TERSE operands, tables, graphics/text, ROM fill,
-  and one uncertain byte at `$1385`.
+The project is in closure rather than broad discovery. The detailed sections
+below are the technical record; this table is the navigation and completion
+summary.
+
+| Area | State |
+| --- | --- |
+| [ROM identity and build](#rom-organization) | All four source ROMs retain the canonical MAME CRC32/SHA1 values. zmac 1.3 produces the byte-identical 8 KB image, which runs in MAME 0.289. |
+| [TERSE](#terse-execution-architecture) | Closed: 11 kernel primitives, 21 native application words, six threaded programs, inline operands, calling conventions, register preservation, interrupt interaction, and maximum stack depths are documented. |
+| Native code and diagnostics | Every reachable native Z80 routine is expressed as assembly. Power-on and service routines are decoded; complete service-mode runtime validation remains a separate closure task. |
+| [RAM and I/O](#ram-and-io-ownership) | Every live byte from `$C000-$C221`, work-RAM clear domains, stack reserve, aliases, raster records, object padding, reset-only cells, and ROM-used I/O ports are assigned or formally classified. |
+| [Video and raster](#raster-interrupt-scheduler) | Both six-entry schedules, IM 2 selection, interrupt handlers, moving split lines, Function Generator modes, Magic RAM usage, drawing, erasure, and collision reads are traced. |
+| [Objects and gameplay](#object-lifecycles) | The 25-byte object ABI, three scheduler pools, nine object types, movement, collision, scoring, overlays, patrol completion, and torpedo/target/mine/Super Sub lifecycles are mapped. |
+| [Cabinet and controls](#cabinet-inputs-dip-switches-and-station-ownership) | Handle/start/coin inputs, S1 operator switches, service selection, station ownership, Gray-code decoding, the 32-way aim clamp, trajectories, and language contacts are resolved. The MAME French-contact correction has been submitted upstream. |
+| [Graphics and text](#structured-graphics-and-tables) | All 43 font glyphs, localized prompts, status graphics, 26 referenced object descriptors, two unreferenced descriptors, self-test patterns, and both trajectory tables are bounded and labeled. |
+| [Sound](#discrete-sound-control) | Frame-owned sound timers, port `$40/$41` packing, sonar, hit, torpedo, dive, and coin-counter timing are documented. |
+| [Residual data](#remaining-raw-data) | The 2,759 remaining `DB` bytes are classified as TERSE operands, tables, graphics/text, or fill, except for the single uncertain byte at `$1385`. |
+
+## Project layout
+
+| Path | Contents |
+| --- | --- |
+| `src/seawolf2.asm` | Reconstructed and annotated source |
+| `src/seawolf2.bin` | Generated contiguous 8 KB image |
+| `src/seawolf2.lst` | Generated zmac listing |
+| `build.sh` | Linux build and packaging script |
+| `build.bat` | Windows build and packaging script |
+| `tools/zmac` | Bundled Linux zmac 1.3 executable |
+| `tools/zmac.exe` | Bundled Windows zmac 1.3 executable |
+| `roms/original/seawolf2.zip` | Canonical reference ROM archive |
+| `roms/seawolf2.zip` | Generated MAME ROM archive |
+| `samples/seawolf.zip` | Controlled MAME sound-sample archive |
+| `docs/` | Manuals, schematics, and technical references |
+| `images/` | Cabinet and hardware reference photographs |
+| `cfg/` | MAME configuration files used by the project |
+
+## Build
+
+This source is built with Bruce Norskog's **zmac 1.3**. That version is the
+required project assembler on both Linux and Windows. Both build scripts invoke
+the bundled zmac 1.3 executable explicitly and place the assembled image at
+`src/seawolf2.bin`.
+
+Linux:
+
+```sh
+./build.sh
+```
+
+Assembler command used by `build.sh`:
+
+```sh
+./tools/zmac -o src/seawolf2.bin src/seawolf2.asm
+```
+
+Windows 10/11:
+
+```bat
+build.bat
+```
+
+Assembler command used by `build.bat`:
+
+```bat
+tools\zmac.exe -o src\seawolf2.bin src\seawolf2.asm
+```
+
+Each script performs the same four steps:
+
+1. Assemble `src/seawolf2.asm` into the 8 KB image and listing.
+2. Split the image into the four original 2 KB ROM filenames.
+3. Create `roms/seawolf2.zip` for MAME.
+4. Verify every generated ROM against its official SHA1 value and fail on any
+   mismatch.
+
+Generated files:
+
+```text
+src/seawolf2.bin
+src/seawolf2.lst
+roms/sw2x1.bin
+roms/sw2x2.bin
+roms/sw2x3.bin
+roms/sw2x4.bin
+roms/seawolf2.zip
+```
+
+## Run in MAME
+
+From the project directory:
+
+```sh
+mame seawolf2 -rompath roms -samplepath samples
+```
+
+MAME must load `roms/seawolf2.zip`, not the reference archive under
+`roms/original`.
+
+## Sound samples
+
+Sea Wolf II's original discrete sound board is not yet emulated by MAME. MAME
+plays five external samples in response to the game's output on ports `$40`
+and `$41`.
+
+The controlled sample archive for this project is:
+
+```text
+samples/seawolf.zip
+```
+
+Using `-samplepath samples` as shown above makes MAME load the archive directly
+from this project. To use the controlled archive with an existing MAME setup
+instead, copy `samples/seawolf.zip` into the directory configured as MAME's
+`samplepath`. Display that directory with:
+
+```sh
+mame -showconfig | grep '^samplepath'
+```
+
+The sample archive must contain these five files at its root:
+
+```text
+dive.wav
+minehit.wav
+shiphit.wav
+sonar.wav
+torpedo.wav
+```
+
+The archive name is shared with the original **Sea Wolf** ROM set. A ROM
+archive containing files such as `sw0041.h` and `sw0044.e` is not the sound
+sample archive. Confirm the installed samples with:
+
+```sh
+mame seawolf2 -samplepath samples -verifysamples
+```
 
 ## ROM organization
 
@@ -97,6 +175,16 @@ nested initialization thread, the control thread, and three localized GAME
 OVER threads. Every execution cell and 16-bit inline operand is expressed as a
 labeled `DW`. The only TERSE bytes retained as `DB` are the five three-byte
 Y/X/size operand groups consumed by `TERSE_DRAW_TEXT_INLINE`.
+
+```mermaid
+flowchart TD
+    cell["BC points to the next execution cell"] --> dispatch["TERSE_DISPATCH"]
+    dispatch --> word["Kernel or native word"]
+    word -->|"JP (IY)"| dispatch
+    word -->|"RST $08"| enter["TERSE_ENTER"]
+    enter --> nested["Nested inline thread"]
+    nested -->|"TERSE_RETURN"| dispatch
+```
 
 ### Register model and dispatch ABI
 
@@ -246,6 +334,20 @@ sound-orientation state.
 define one balanced loop. Every branch converges at `control_continue` before
 the exit flag is tested.
 
+```mermaid
+flowchart TD
+    begin["TERSE_BEGIN"] --> patrol{"Patrol complete?"}
+    patrol -->|Yes| finish["Check patrol end or extension"]
+    patrol -->|No| players{"Active player?"}
+    finish --> players
+    players -->|Yes| play["Hits, scores, sonar, and fire"]
+    players -->|No| attract["Objects, high score, and credits"]
+    play --> tail["Coin pulse and exit-flag fetch"]
+    attract --> tail
+    tail -->|Zero| begin
+    tail -->|Nonzero| ret["TERSE_RETURN"]
+```
+
 | Path | Condition and execution sequence |
 | --- | --- |
 | Patrol transition | If `PATROL_COMPLETE_FLAG` is nonzero, run `CHECK_PATROL_END_OR_EXTENDED_PLAY` |
@@ -343,6 +445,35 @@ execution cell, inline address, native application word, or threaded code area
 remains in the ROM.
 
 ## RAM and I/O ownership
+
+### MAME CPU address map
+
+MAME's Sea Wolf II driver exposes four CPU-visible address-space regions. The
+overlap at `$0000-$1FFF` is intentional: reads select ROM, while writes across
+`$0000-$3FFF` are handled by the Astrocade Function Generator.
+
+```cpp
+/*************************************
+ *
+ *  Memory maps
+ *
+ *************************************/
+
+void astrocde_state::seawolf2_map(address_map &map)
+{
+	map(0x0000, 0x1fff).rom();
+	map(0x0000, 0x3fff).w(FUNC(astrocde_state::astrocade_funcgen_w));
+	map(0x4000, 0x7fff).ram().share("videoram");
+	map(0xc000, 0xc3ff).ram();
+}
+```
+
+| CPU range | Access | Driver owner |
+| ---: | --- | --- |
+| `$0000-$1FFF` | Read | Program ROM |
+| `$0000-$3FFF` | Write | Astrocade Function Generator / Magic RAM window |
+| `$4000-$7FFF` | Read/write | Shared video RAM |
+| `$C000-$C3FF` | Read/write | 1 KB work RAM |
 
 ### Clear domains and overlays
 
@@ -501,6 +632,16 @@ Record byte `$01` is conclusively unused. `ADVANCE_INTERRUPT_SCHEDULE`
 increments across it without loading it, and all twelve instances are zero.
 The extra `$FF` after the color-schedule terminator is unreachable alignment
 fill. All four bytes of each RAM motion state are live; none is reserved.
+
+```mermaid
+flowchart TD
+    r84["$84 alternate raster"] --> rd7["$D7 alternate raster"]
+    rd7 --> r0c["$0C alternate raster"]
+    r0c --> r18["$18 frame service"]
+    r18 --> r30["$30 alternate raster"]
+    r30 --> r54["$54 alternate raster"]
+    r54 --> r84
+```
 
 The scanlines execute in this order. The handler and motion state are selected
 by the preceding record:
@@ -1334,127 +1475,32 @@ The remaining `DB` regions are intentional data encodings. Named RAM cells,
 hardware ports, bitmap addresses, and prompt-string pointers are symbolic at
 their use sites.
 
-## Build
-
-This source is built with Bruce Norskog's **zmac 1.3**. That version is the
-required project assembler on both Linux and Windows. Both build scripts invoke
-the bundled zmac 1.3 executable explicitly and place the assembled image at
-`src/seawolf2.bin`.
-
-Linux:
-
-```sh
-./build.sh
-```
-
-Assembler command used by `build.sh`:
-
-```sh
-./tools/zmac -o src/seawolf2.bin src/seawolf2.asm
-```
-
-Windows 10/11:
-
-```bat
-build.bat
-```
-
-Assembler command used by `build.bat`:
-
-```bat
-tools\zmac.exe -o src\seawolf2.bin src\seawolf2.asm
-```
-
-Each script performs the same four steps:
-
-1. Assemble `src/seawolf2.asm` into the 8 KB image and listing.
-2. Split the image into the four original 2 KB ROM filenames.
-3. Create `roms/seawolf2.zip` for MAME.
-4. Verify every generated ROM against its official SHA1 value and fail on any
-   mismatch.
-
-Generated files:
-
-```text
-src/seawolf2.bin
-src/seawolf2.lst
-roms/sw2x1.bin
-roms/sw2x2.bin
-roms/sw2x3.bin
-roms/sw2x4.bin
-roms/seawolf2.zip
-```
-
-## Run in MAME
-
-From the project directory:
-
-```sh
-mame seawolf2 -rompath roms -samplepath samples
-```
-
-MAME must load `roms/seawolf2.zip`, not the reference archive under
-`roms/original`.
-
-## Sound samples
-
-Sea Wolf II's original discrete sound board is not yet emulated by MAME. MAME
-plays five external samples in response to the game's output on ports `$40`
-and `$41`.
-
-The controlled sample archive for this project is:
-
-```text
-samples/seawolf.zip
-```
-
-Using `-samplepath samples` as shown above makes MAME load the archive directly
-from this project. To use the controlled archive with an existing MAME setup
-instead, copy `samples/seawolf.zip` into the directory configured as MAME's
-`samplepath`. Display that directory with:
-
-```sh
-mame -showconfig | grep '^samplepath'
-```
-
-The sample archive must contain these five files at its root:
-
-```text
-dive.wav
-minehit.wav
-shiphit.wav
-sonar.wav
-torpedo.wav
-```
-
-The archive name is shared with the original **Sea Wolf** ROM set. A ROM
-archive containing files such as `sw0041.h` and `sw0044.e` is not the sound
-sample archive. Confirm the installed samples with:
-
-```sh
-mame seawolf2 -samplepath samples -verifysamples
-```
-
-## Project layout
-
-| Path | Contents |
-| --- | --- |
-| `src/seawolf2.asm` | Reconstructed and annotated source |
-| `src/seawolf2.bin` | Generated contiguous 8 KB image |
-| `src/seawolf2.lst` | Generated zmac listing |
-| `build.sh` | Linux build and packaging script |
-| `build.bat` | Windows build and packaging script |
-| `tools/zmac` | Bundled Linux zmac 1.3 executable |
-| `tools/zmac.exe` | Bundled Windows zmac 1.3 executable |
-| `roms/original/seawolf2.zip` | Canonical reference ROM archive |
-| `roms/seawolf2.zip` | Generated MAME ROM archive |
-| `samples/seawolf.zip` | Controlled MAME sound-sample archive |
-| `docs/` | Manuals, schematics, and technical references |
-| `images/` | Cabinet and hardware reference photographs |
-| `cfg/` | MAME configuration files used by the project |
-
 ## Verification
 
 The reconstruction is considered valid only when the complete 8 KB output and
 all four split ROMs retain the canonical hashes above. Labels, comments,
 equates, and decoded instructions may change; assembled bytes may not.
+
+## References
+
+The controlled copies used during reverse engineering are retained under
+`docs/`. These external archives provide the corresponding public reference
+material:
+
+### Emulator source
+
+- [MAME `astrocde.cpp` driver](https://github.com/mamedev/mame/blob/master/src/mame/bally/astrocde.cpp)
+
+### Bally Alley
+
+- [Bally Alley: Astrocade-chipset arcade documentation](https://ballyalley.com/documentation/Arcade_Games/Arcade_Games.html)
+- [Sea Wolf II Parts Catalog (June 1, 1978)](https://ballyalley.com/documentation/Arcade_Games/Seawolf%20II/Seawolf_II_Parts_Catalog_%28June_1_1978%29.pdf)
+- [Sea Wolf II schematics archive](https://ballyalley.com/documentation/Arcade_Games/Seawolf%20II/Seawolf%20II%20%28Schematics%29.zip)
+
+### International Arcade Museum
+
+- [Sea Wolf II game record](https://www.arcade-museum.com/Videogame/sea-wolf-ii)
+- [Sea Wolf II schematic](https://www.arcade-museum.com/manuals-videogames/S/SeaWolf2-sp.pdf)
+- [Sea Wolf II Parts Catalog](https://www.arcade-museum.com/manuals-videogames/S/SeaWolfII.pdf)
+- [The Arcade Flyer Archive: U.S. sales flyer](https://flyers.arcade-museum.com/videogames/show/905)
+- [The Arcade Flyer Archive: German sales flyer](https://flyers.arcade-museum.com/videogames/show/5231)
