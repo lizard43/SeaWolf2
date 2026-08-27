@@ -43,7 +43,7 @@ summary.
 | `roms/seawolf2.zip` | Generated MAME ROM archive |
 | `samples/seawolf.zip` | Controlled MAME sound-sample archive |
 | `docs/` | Manuals, schematics, and technical references |
-| `images/` | Cabinet and hardware reference photographs |
+| `images/` | Cabinet, hardware, and address-space reference images |
 | `cfg/` | MAME configuration files used by the project |
 
 ## Build
@@ -474,6 +474,12 @@ void astrocde_state::seawolf2_map(address_map &map)
 | `$0000-$3FFF` | Write | Astrocade Function Generator / Magic RAM window |
 | `$4000-$7FFF` | Read/write | Shared video RAM |
 | `$C000-$C3FF` | Read/write | 1 KB work RAM |
+
+The complete 64 KB view below expands the driver map into its read/write
+semantics, ROM-device boundaries, open-bus ranges, work-RAM ownership, and
+stack placement.
+
+![Sea Wolf II Z80 CPU memory map](images/seawolf2-memory-map.png)
 
 ### Clear domains and overlays
 
