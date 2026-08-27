@@ -1,50 +1,39 @@
 # Sea Wolf II
 
-This project is a byte-exact reconstruction and reverse-engineering baseline
-for **Sea Wolf II**, released by Dave Nutting Associates / Midway in 1978.
+This project is a byte-exact reconstruction and reverse-engineering baseline for **Sea Wolf II**, released by Dave Nutting Associates (DNA) / Midway in 1978.
 
-Sea Wolf II is a notable Dave Nutting Associates title because most of the game
-is implemented in TERSE, DNA's direct-threaded Z80 language. Native Z80
-primitives, 16-bit threaded addresses, inline operands, graphics, text, and
-tables share the same 8 KB ROM image. A conventional linear disassembly does
-not describe that structure correctly.
+Sea Wolf II is a notable DNA title because most of the game
+is implemented in TERSE, DNA's direct-threaded Z80 language. Native Z80 primitives, 16-bit threaded addresses, inline operands, graphics, text, and tables share the same 8 KB ROM image. 
 
-## Current status
+## Reverse Engineering (RE) Status
 
-The project is in closure rather than broad discovery. The detailed sections
-below are the technical record; this table is the navigation and completion
-summary.
-
-| Area | State |
+|  |  |
 | --- | --- |
 | [ROM identity and build](#rom-organization) | All four source ROMs retain the canonical MAME CRC32/SHA1 values. zmac 1.3 produces the byte-identical 8 KB image, which runs in MAME 0.289. |
-| [TERSE](#terse-execution-architecture) | Closed: 11 kernel primitives, 21 native application words, six threaded programs, inline operands, calling conventions, register preservation, interrupt interaction, and maximum stack depths are documented. |
-| Native code and diagnostics | Every reachable native Z80 routine is expressed as assembly. Power-on and service routines are decoded; complete service-mode runtime validation remains a separate closure task. |
-| [RAM and I/O](#ram-and-io-ownership) | Every live byte from `$C000-$C221`, work-RAM clear domains, stack reserve, aliases, raster records, object padding, reset-only cells, and ROM-used I/O ports are assigned or formally classified. |
-| [Video and raster](#raster-interrupt-scheduler) | Both six-entry schedules, IM 2 selection, interrupt handlers, moving split lines, Function Generator modes, Magic RAM usage, drawing, erasure, and collision reads are traced. |
 | [Objects and gameplay](#object-lifecycles) | The 25-byte object ABI, three scheduler pools, nine object types, movement, collision, scoring, overlays, patrol completion, and torpedo/target/mine/Super Sub lifecycles are mapped. |
+| [Graphics and text](#structured-graphics-and-tables) | 43 font glyphs, localized prompts, status graphics, 26 referenced object descriptors, 2 unreferenced descriptors, self-test patterns, and both trajectory tables are bounded and labeled. |
+| [Sound](#discrete-sound-control) | Sound timers, port `$40/$41` packing, sonar, hit, torpedo, dive, and coin-counter timing are documented. |
+| [TERSE](#terse-execution-architecture) | 11 kernel primitives, 21 native application words, six threaded programs, inline operands, calling conventions, register preservation, interrupt interaction, and maximum stack depths are documented. |
+| [Native code and diagnostics](#service-diagnostics) | All reachable Z80 routines expressed as assembly rather than DBs. The four service entry modes, checksum and walking-bit algorithms, failure displays, handle screen, and convergence grid. |
+| [RAM and I/O](#ram-and-io-ownership) | Every live byte from `$C000-$C221`, work-RAM clear domains, stack reserve, aliases, raster records, object padding, reset-only cells, and ROM-used I/O ports are assigned or formally classified. |
+| [Video and raster](#raster-interrupt-scheduler) | Both 6-entry schedules, IM 2 selection, interrupt handlers, moving split lines, Function Generator modes, Magic RAM usage, drawing, erasure, and collision reads are traced. |
 | [Cabinet and controls](#cabinet-inputs-dip-switches-and-station-ownership) | Handle/start/coin inputs, S1 operator switches, service selection, station ownership, Gray-code decoding, the 32-way aim clamp, trajectories, and language contacts are resolved. The French-contact correction is tracked by [MAME PR #15989](https://github.com/mamedev/mame/pull/15989). |
-| [Graphics and text](#structured-graphics-and-tables) | All 43 font glyphs, localized prompts, status graphics, 26 referenced object descriptors, two unreferenced descriptors, self-test patterns, and both trajectory tables are bounded and labeled. |
-| [Sound](#discrete-sound-control) | Frame-owned sound timers, port `$40/$41` packing, sonar, hit, torpedo, dive, and coin-counter timing are documented. |
-| [Residual data](#remaining-raw-data) | The 2,759 remaining `DB` bytes are classified as TERSE operands, tables, graphics/text, or fill, except for the single uncertain byte at `$1385`. |
+| [Residual data](#remaining-raw-data) | All 2,761 remaining `DB` bytes are classified as TERSE operands, tables, graphics/text, padding, or checksum-balancing filler. No uncertain byte remains. |
 
 ## Project layout
 
 | Path | Contents |
 | --- | --- |
 | `src/seawolf2.asm` | Reconstructed and annotated source |
-| `src/seawolf2.bin` | Generated contiguous 8 KB image |
-| `src/seawolf2.lst` | Generated zmac listing |
 | `build.sh` | Linux build and packaging script |
 | `build.bat` | Windows build and packaging script |
 | `tools/zmac` | Bundled Linux zmac 1.3 executable |
 | `tools/zmac.exe` | Bundled Windows zmac 1.3 executable |
-| `roms/original/seawolf2.zip` | Canonical reference ROM archive |
-| `roms/seawolf2.zip` | Generated MAME ROM archive |
+| `roms/original/seawolf2.zip` | Reference ROM archive |
 | `samples/seawolf.zip` | Controlled MAME sound-sample archive |
 | `docs/` | Manuals, schematics, and technical references |
 | `images/` | Cabinet, hardware, and address-space reference images |
-| `cfg/` | MAME configuration files used by the project |
+
 
 ## Build
 
@@ -105,9 +94,6 @@ From the project directory:
 mame seawolf2 -rompath roms -samplepath samples
 ```
 
-MAME must load `roms/seawolf2.zip`, not the reference archive under
-`roms/original`.
-
 ## Sound samples
 
 Sea Wolf II's original discrete sound board is not yet emulated by MAME. MAME
@@ -160,6 +146,10 @@ The four 2 KB ROMs form one contiguous Z80 image mapped at `$0000-$1FFF`.
 
 Combined 8 KB image SHA1:
 `23bbc0b9ceb066f1db6332cb4b8bc1540090dc1b`
+
+The 64 KB Memory Map illustrates the read/write semantics, ROM-device boundaries, open-bus ranges, work-RAM ownership, and stack placement.
+
+![Sea Wolf II Z80 CPU memory map](images/seawolf2-memory-map.png)
 
 ## TERSE execution architecture
 
@@ -444,7 +434,7 @@ and all 21 application words are now accounted for. No unlabeled TERSE
 execution cell, inline address, native application word, or threaded code area
 remains in the ROM.
 
-## RAM and I/O ownership
+## RAM and I/O
 
 ### MAME CPU address map
 
@@ -475,11 +465,6 @@ void astrocde_state::seawolf2_map(address_map &map)
 | `$4000-$7FFF` | Read/write | Shared video RAM |
 | `$C000-$C3FF` | Read/write | 1 KB work RAM |
 
-The complete 64 KB view below expands the driver map into its read/write
-semantics, ROM-device boundaries, open-bus ranges, work-RAM ownership, and
-stack placement.
-
-![Sea Wolf II Z80 CPU memory map](images/seawolf2-memory-map.png)
 
 ### Clear domains and overlays
 
@@ -623,6 +608,35 @@ The unassigned space above `$C221` is stack capacity, not safe spare RAM.
 The hardware mapping mirrors `$40-$43` at `$48-$4B`, `$50-$53`, and
 `$58-$5B`; the ROM uses only the base ports. No other I/O address has a ROM
 reference.
+
+### Station lamp latch semantics
+
+Ports `$42` and `$43` are independent six-bit output latches for the left/P2
+and right/P1 stations. The MAME driver assigns the bits as follows:
+
+| Bit | Mask | Cabinet indication |
+| ---: | ---: | --- |
+| 0 | `$01` | Torpedo 4 available |
+| 1 | `$02` | Torpedo 3 available |
+| 2 | `$04` | Torpedo 2 available |
+| 3 | `$08` | Torpedo 1 available |
+| 4 | `$10` | READY when set; RELOAD is driven by the inverse |
+| 5 | `$20` | Hit/explosion lamp |
+| 6-7 | `$C0` | Unused by the ROM and MAME output mapping |
+
+Reload completion writes `$1F`: all four torpedo lamps and READY turn on, and
+the inverted RELOAD indication turns off. Each accepted shot constructs the
+remaining-torpedo mask from bits 0-3 while retaining READY. The fourth shot
+writes zero, extinguishing the four torpedo lamps and READY while asserting
+RELOAD through the inverse output.
+
+`PROCESS_SHIP_HIT` ORs bit 5 into the live latch value for the successful
+station without changing its saved lamp image. When the localized hit-score
+overlay expires, `ERASE_EXPIRED_HIT_SCORES` writes that saved image back and
+therefore removes the temporary hit indication. The current MAME
+`seawolf2.lay` file explicitly omits the two explosion lamps even though the
+driver exports them; that is a layout-visualization omission, not an unused ROM
+output.
 
 ## Raster interrupt scheduler
 
@@ -804,7 +818,8 @@ selected cost and return to the outer TERSE game loop.
 With S1-8 in service position, reset selects the diagnostic from the two start
 inputs: no button runs ROM checksum and memory tests, one-player start skips
 the ROM checksum, two-player start opens the two-handle input display, and both
-buttons open the convergence grid.
+buttons open the convergence grid. See [Service diagnostics](#service-diagnostics)
+for the exact algorithms and failure behavior.
 
 ### Language switch and MAME correction
 
@@ -1466,27 +1481,130 @@ No reachable native Z80 remains encoded as `DB`.
 | TERSE inline operands | 5 | 15 |
 | Lookup, property, and pointer tables | 9 | 350 |
 | Graphics, text, and diagnostic patterns | 9 | 2,317 |
-| Padding and unused ROM | 1 | 76 |
-| Uncertain mixed role | 1 | 1 |
-| **Total** | **25** | **2,759** |
+| Padding and checksum filler | 4 | 79 |
+| **Total** | **27** | **2,761** |
 
 The graphics audit found no other complete unreferenced bitmap descriptors.
 The six full-mask font slots at `$1203-$123E` are mapper-addressable but unused
 by every ROM string. The inter-descriptor zero gaps are not assets.
 
-The uncertain byte is `$8E` at `$1385`. It is not referenced as data, is not
-reachable from adjacent native code, and is too small to classify as graphics.
-`$1FB4-$1FFE` is ROM-tail fill; `$1FFF` is the final block's checksum adjustment.
+The final static reference and fall-through pass closes all four block-level
+filler sites:
+
+| ROM block | Filler | Sum without filler | Required value | Structural boundary |
+| ---: | ---: | ---: | ---: | --- |
+| `$0000-$07FF` | `$0015 = E3` | `$1C` | `$E3` | Between `TERSE_ENTER`'s terminal `JP (IY)` and `WARM_START` at `$0016` |
+| `$0800-$0FFF` | `$0ACA = 37` | `$C8` | `$37` | Between `DECODE_HANDLE_POSITION`'s `RET` and `UPDATE_SONAR_SEQUENCE` at `$0ACB` |
+| `$1000-$17FF` | `$1385 = 8E` | `$71` | `$8E` | After the zero terminator of `TEXT_SUB`; every interrupt pointer targets `$1386` |
+| `$1800-$1FFF` | `$1FFF = 1C` | `$E3` | `$1C` | Final byte after erased-ROM fill at `$1FB4-$1FFE` |
+
+Every value is the exact complement needed to make its containing `$0800`-byte
+ROM sum to `$FF`. No direct branch, call, TERSE cell, data pointer, raster
+schedule, adjacent instruction, or zero-terminated text traversal enters the
+first three bytes. They are therefore encoded as data and classified as
+checksum-balancing filler rather than executable instructions or an unknown
+asset.
 
 The remaining `DB` regions are intentional data encodings. Named RAM cells,
 hardware ports, bitmap addresses, and prompt-string pointers are symbolic at
 their use sites.
 
-## Verification
+## Service diagnostics
 
-The reconstruction is considered valid only when the complete 8 KB output and
-all four split ROMs retain the canonical hashes above. Labels, comments,
-equates, and decoded instructions may change; assembled bytes may not.
+Service mode is part of the native power-on path, not a TERSE thread. With
+operator switch S1-8 OFF, `WARM_START` branches to `POWER_ON_SELF_TEST` at
+`$00E8`. The two start inputs on port `$12` select one of four reset-time
+paths.
+
+### Entry selection
+
+The operator must hold the listed button combination while resetting the
+machine. Coin input and the language contact share port `$12` but are excluded
+by the `$06` start-button mask.
+
+| Start 1 | Start 2 | Masked value | Service path |
+| --- | --- | ---: | --- |
+| Released | Released | `$00` | Clear video RAM, checksum all four program ROMs, then test video RAM and work RAM |
+| Held | Released | `$02` | Skip the ROM pass and run the video-RAM and work-RAM tests |
+| Released | Held | `$04` | Initialize the playfield and enter the live two-handle position display |
+| Held | Held | `$06` | Draw the convergence grid and wait for reset |
+
+```mermaid
+flowchart TD
+    reset["Reset with S1-8 OFF"] --> select{"Port $12 start mask"}
+    select -->|"$00 neither"| rom["Four ROM checksums"]
+    rom --> memory["Video and work RAM"]
+    select -->|"$02 Start 1"| memory
+    select -->|"$04 Start 2"| handles["Two-handle display"]
+    select -->|"$06 both"| grid["Convergence grid"]
+```
+
+### ROM checksum path
+
+The no-button path first clears all 16 KB at `$4000-$7FFF`. It then computes an
+eight-bit additive checksum over each `$0800`-byte ROM block. Every block must
+sum to `$FF` modulo 256.
+
+| Block identifier | ROM range | Expected sum |
+| --- | ---: | ---: |
+| A | `$0000-$07FF` | `$FF` |
+| B | `$0800-$0FFF` | `$FF` |
+| C | `$1000-$17FF` | `$FF` |
+| D | `$1800-$1FFF` | `$FF` |
+
+A failed block draws its letter and the loop continues, so all four ROMs are
+examined in one pass. `TEXT_X_POSITION_HI` at `$C1FF` begins at `$32` and also
+acts as the pass sentinel. Drawing any failure letter advances that coordinate;
+corruption can change it as well. If it is no longer `$32` after block D, the
+ROM halts before the destructive RAM test, preserving the visible failure
+report.
+
+### Video-RAM and work-RAM tests
+
+The same verifier runs over `$4000-$7FFF` and then `$C000-$C3FF`. Descriptor
+records at `$0182` and `$0197` supply each range and begin with executable `JR`
+continuations. The verifier uses `IY` as the descriptor/continuation pointer;
+its final `JP (IY)` is native control flow and is unrelated to TERSE dispatch.
+
+For each walking bit `$01,$02,$04,$08,$10,$20,$40,$80`, the verifier performs:
+
+1. An ascending write and immediate readback of the bit value.
+2. A descending readback, followed by a write and readback of its complement.
+3. An ascending complement readback followed by a zero clear.
+
+The XOR of every failed comparison is accumulated in `C`, producing a complete
+failed-data-bit mask. A clean video-RAM pass loads the second palette and starts
+the work-RAM pass. A clean work-RAM pass returns through `WARM_START`; while
+S1-8 remains in service position, the selected diagnostic cycle repeats.
+
+### Failure and interactive displays
+
+A memory failure fills the screen with repeated `$00/$55/$AA/$FF` bands, then
+maps each failed data bit to one palette register and halts. The mapping is
+deliberately reversed within each four-color group:
+
+| Failed data bit | Palette register written |
+| ---: | ---: |
+| 0 | 3 |
+| 1 | 2 |
+| 2 | 1 |
+| 3 | 0 |
+| 4 | 7 |
+| 5 | 6 |
+| 6 | 5 |
+| 7 | 4 |
+
+The interactive path decodes both six-bit Gray-code handle values and renders
+each as six binary digits, with the left/P2 handle at X=`$00` and the right/P1
+handle at X=`$78`. FIRE is masked out. The convergence path builds a fixed
+vertical/horizontal grid and remains in a polling loop until reset.
+
+This is the complete ROM-owned service interface. The start buttons select the
+mode only at entry; there is no ROM service branch that interactively tests
+coin, FIRE, station lamps, or discrete sound. The two diagnostic palettes
+exercise display colors automatically, but there is no operator-selectable
+color test. Controlled bad-ROM and RAM-failure injection, plus a fresh runtime
+capture of all four entries, remain the dynamic verification work.
 
 ## References
 
