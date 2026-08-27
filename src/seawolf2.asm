@@ -20,9 +20,9 @@
 ; Remaining raw-region inventory
 ;
 ; Every byte still emitted with DB is classified below.  The inventory covers
-; 2,759 bytes in 25 classified address regions; no DB byte is omitted.  All
+; 2,761 bytes in 27 classified address regions; no DB byte is omitted.  All
 ; reachable native Z80 is expressed as instructions.  Remaining DB bytes are
-; TERSE inline operands, tables, graphics/text, padding, or explicitly unknown.
+; TERSE inline operands, tables, graphics/text, padding, or checksum filler.
 ;
 ; TERSE INLINE OPERANDS                          5 spans / 15 bytes
 ;   $0375-$0377  HIGH SCORE text Y/X/size operands
@@ -54,13 +54,15 @@
 ;   $1CDD-$1E91  German prompt text
 ;   $1EFC-$1FB3  French prompt text
 ;
-; PADDING OR UNUSED ROM                          1 span / 76 bytes
+; PADDING OR CHECKSUM FILLER                     4 spans / 79 bytes
+;   $0015        isolated byte between TERSE_ENTER and WARM_START
+;   $0ACA        isolated byte between DECODE_HANDLE_POSITION and sonar update
+;   $1385        isolated byte between TEXT_SUB and the $1386 ISR entry
 ;   $1FB4-$1FFF  erased-ROM fill; $1FFF is the block checksum adjustment
 ;
-; GENUINELY UNCERTAIN                            1 span / 1 byte
-;   $1385        unreferenced $8E between TEXT_SUB and the $1386 ISR entry
-;
-; Inventory invariant: remaining DB byte count = 2,759.
+; Each isolated byte has no incoming address reference or executable/data
+; fall-through and is the exact value required to make its $0800-byte ROM's
+; additive checksum $FF.  Inventory invariant: remaining DB count = 2,761.
 ;===============================================================================
 
 ; Sea Wolf II I/O ownership.  Ports $00-$0F are the Astrocade data-chip
@@ -300,6 +302,9 @@ SELF_TEST_TEXT_BUFFER   EQU     $C000
 SELF_TEST_ROM_BLOCK_SIZE EQU    $0800
 SELF_TEST_PALETTE_BYTES EQU     $08
 SELF_TEST_FAILURE_PATTERN_BYTES EQU $0028
+SELF_TEST_ROM_EXPECTED_SUM EQU  $FF
+SELF_TEST_ROM_SENTINEL_X EQU    $32
+SELF_TEST_FAILURE_COLOR EQU     $47
 
 GAME_CLOCK_DIVIDER          EQU $C1DA
 GAME_TIME_BCD               EQU $C1DB
@@ -444,7 +449,17 @@ TORPEDO_SOUND_TIMER_LOAD        EQU $38
 HIT_ANIMATION_TIMER_LOAD        EQU $06
 RETIRED_OBJECT_TIMER_LOAD       EQU $2D
 NEW_HIGH_SCORE_BLINK_PERIOD     EQU $1E
-LAMP_HIT_INDICATOR_MASK         EQU $20
+; Each station's six-bit lamp latch.  MAME labels bits 0..3 as torpedoes 4..1.
+; Bit 4 lights READY; the physical/UI RELOAD indication is its inverse.  Bit 5
+; drives the hit/explosion lamp, which the current MAME layout does not draw.
+LAMP_TORPEDO_4_MASK             EQU $01
+LAMP_TORPEDO_3_MASK             EQU $02
+LAMP_TORPEDO_2_MASK             EQU $04
+LAMP_TORPEDO_1_MASK             EQU $08
+LAMP_TORPEDOES_MASK             EQU $0F
+LAMP_READY_MASK                 EQU $10
+LAMP_FULL_MAGAZINE_MASK         EQU $1F
+LAMP_HIT_MASK                   EQU $20
 
 GAME_CLOCK_DIVIDER_RELOAD       EQU $3C
 EXTENDED_SCORE_BASE_BCD         EQU $40
@@ -592,7 +607,11 @@ TERSE_ENTER:            DEC     IX
                         POP     BC
                         DW      TERSE_DISPATCH_OPCODE
 
-UNUSED_0015:            EX      (SP),HL
+; No control-flow edge enters this byte: TERSE_ENTER ends in JP (IY), and the
+; next native entry is WARM_START at $0016.  $E3 is the exact complement needed
+; for the first $0800-byte ROM's additive checksum to equal $FF.
+ROM_BLOCK_0_CHECKSUM_FILLER:
+                        DB      $E3
 
 WARM_START:             LD      A,$01
                         OUT     (PORT_VIDEO_MODE),A
@@ -747,7 +766,8 @@ POWER_ON_SELF_TEST:
 ; With the service DIP active, reset enters here instead of the TERSE game
 ; thread.  No start button runs the ROM checksum before the destructive memory
 ; tests.  Holding START 1 skips directly to memory; START 2 selects the input
-; display; holding both start buttons selects the convergence grid.
+; display; holding both start buttons selects the convergence grid.  The ROM
+; has no interactive service branch for FIRE, coin, lamps, or discrete sound.
                         DI
                         XOR     A
                         OUT     (PORT_COLOR_4),A
@@ -778,7 +798,7 @@ self_test_clear_video:  LD      (HL),$00
 ; identifies the block when a checksum fails.
                         LD      A,EXPAND_COLORS_0_3
                         LD      (TEXT_COLOR),A
-                        LD      A,$32
+                        LD      A,SELF_TEST_ROM_SENTINEL_X
                         LD      (TEXT_X_POSITION_HI),A
                         LD      (TEXT_Y_POSITION),A
                         LD      BC,SELF_TEST_ROM_BLOCK_SIZE
@@ -793,7 +813,7 @@ self_test_sum_rom_byte: ADD     A,(HL)
                         JR      NZ,self_test_sum_rom_byte
                         DJNZ    self_test_sum_rom_byte
                         LD      A,D
-                        CP      $FF
+                        CP      SELF_TEST_ROM_EXPECTED_SUM
                         JR      NZ,self_test_report_rom_failure
 self_test_next_rom:     LD      BC,SELF_TEST_ROM_BLOCK_SIZE
                         IN      A,(PORT_LEFT_STATION_HANDLE)
@@ -801,10 +821,12 @@ self_test_next_rom:     LD      BC,SELF_TEST_ROM_BLOCK_SIZE
                         CP      $20
                         JR      NZ,self_test_checksum_rom
 
-; The renderer's X-position byte doubles as a work-RAM sentinel during the ROM
-; pass.  Corruption stops the test before destructive RAM verification begins.
+; The renderer's X position doubles as a sentinel during the ROM pass.  It
+; remains $32 only when no failure letter was drawn; DRAW_TEXT advances it.
+; Any checksum report, or corruption of this byte, therefore halts before the
+; destructive RAM test can erase the visible ROM-failure result.
                         LD      A,(TEXT_X_POSITION_HI)
-                        CP      $32
+                        CP      SELF_TEST_ROM_SENTINEL_X
                         JR      Z,SELF_TEST_MEMORY_DIAGNOSTICS
 self_test_ram_failure:  IN      A,(PORT_LEFT_STATION_HANDLE)
                         JR      self_test_ram_failure
@@ -981,7 +1003,7 @@ self_test_expand_failure_pattern:
                         DJNZ    self_test_expand_failure_pattern
                         EXX
 
-                        LD      A,$47
+                        LD      A,SELF_TEST_FAILURE_COLOR
                         BIT     0,C
                         JR      Z,self_test_error_bit_1
                         OUT     (PORT_COLOR_3),A
@@ -1705,7 +1727,7 @@ process_target_hit:     BIT     5,(HL)
                         LD      A,(LEFT_LAMP_STATE)
                         LD      C,PORT_LEFT_LAMPS
 hit_station_selected:   INC     HL                      ; OBJECT_TYPE
-                        OR      LAMP_HIT_INDICATOR_MASK
+                        OR      LAMP_HIT_MASK
                         OUT     (C),A
                         LD      A,(HL)
                         DEC     HL
@@ -2040,7 +2062,9 @@ RELOAD_PLAYER_TORPEDOES_AND_ACTIVATE_MINES:
                         OR      A
                         RET     NZ
                         LD      (HL),$04
-                        LD      A,$1F
+; A full magazine lights torpedoes 4..1 and READY.  Because RELOAD is wired as
+; the inverse of READY, this same write extinguishes the RELOAD indication.
+                        LD      A,LAMP_FULL_MAGAZINE_MASK
                         OUT     (C),A
                         PUSH    IY
                         EXX
@@ -2332,7 +2356,9 @@ torpedo_slot_available: LD      B,(HL)
 torpedo_slot_mask:      SCF
                         RLA
                         DJNZ    torpedo_slot_mask
-                        OR      $10
+; The shift builds the remaining-torpedo mask.  READY remains asserted until
+; the fourth shot writes zero, which also asserts the inverted RELOAD output.
+                        OR      LAMP_READY_MASK
 torpedo_slot_selected:  INC     HL
                         LD      (HL),A
                         DEC     HL
@@ -2455,7 +2481,12 @@ decode_handle_bit:      LD      A,C
                         POP     DE
                         POP     BC
                         RET
-                        SCF                             ; $0ACA, unreachable pad
+
+; DECODE_HANDLE_POSITION returns at $0AC9 and UPDATE_SONAR_SEQUENCE begins at
+; $0ACB.  No control-flow edge enters $0ACA; $37 is the exact complement needed
+; for the second $0800-byte ROM's additive checksum to equal $FF.
+ROM_BLOCK_1_CHECKSUM_FILLER:
+                        DB      $37
 
 ;-------------------------------------------------------------------------------
 ; $0ACB: Alternate sonar between speakers while the sequence remains active
@@ -4454,9 +4485,11 @@ TEXT_SUPER:
 TEXT_SUB:
                         DB      $53,$55,$42,$00                                         ; $1381  SUB.
 
-; $1385 is neither referenced as data nor reached as code.  It is retained as
-; the inventory's sole genuinely uncertain byte rather than assigned a role.
-UNCERTAIN_1385:
+; TEXT_SUB terminates at $1384 and every interrupt schedule targets the native
+; entry at $1386.  No data or control-flow edge enters $1385; $8E is the exact
+; complement needed for the third $0800-byte ROM's additive checksum to equal
+; $FF.
+ROM_BLOCK_2_CHECKSUM_FILLER:
                         DB      $8E                                                     ; $1385
 
 ;-------------------------------------------------------------------------------
@@ -6098,7 +6131,7 @@ ROM_TAIL_PADDING:
                         DB      $FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF,$FF                 ; $1FF4
 
 ; $1FFF balances the additive checksum of ROM block $1800-$1FFF to $FF.
-ROM_BLOCK_CHECKSUM_ADJUSTMENT:
+ROM_BLOCK_3_CHECKSUM_ADJUSTMENT:
                         DB      $1C                                                     ; $1FFF
 
 ROM_END:
