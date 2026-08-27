@@ -2,8 +2,12 @@
 
 This project is a byte-exact reconstruction and reverse-engineering baseline for **Sea Wolf II**, released by Dave Nutting Associates (DNA) / Midway in 1978.
 
-Sea Wolf II is a notable DNA title because most of the game
-is implemented in TERSE, DNA's direct-threaded Z80 language. Native Z80 primitives, 16-bit threaded addresses, inline operands, graphics, text, and tables share the same 8 KB ROM image. 
+Sea Wolf II is a notable DNA title because most of the game is implemented in TERSE, DNA's direct-threaded Z80 language. 
+
+The original game was designed and programmed by a primary duo:
+- Dave Nutting (Game Designer)
+- Tom McHugh (Principal Programmer)
+- Alan McNeil - the famous creator of Berzerk was also heavily involved at DNA during this era. McNeil is actually the genius who created and programmed the TERSE language (which stands for Terse Efficient Recursive Stack Engine). He assisted with the engineering, hardware systems, and programming framework for both Sea Wolf II and Boot Hill before leaving DNA.
 
 ## Reverse Engineering (RE) Status
 
