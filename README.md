@@ -23,7 +23,7 @@ summary.
 | [RAM and I/O](#ram-and-io-ownership) | Every live byte from `$C000-$C221`, work-RAM clear domains, stack reserve, aliases, raster records, object padding, reset-only cells, and ROM-used I/O ports are assigned or formally classified. |
 | [Video and raster](#raster-interrupt-scheduler) | Both six-entry schedules, IM 2 selection, interrupt handlers, moving split lines, Function Generator modes, Magic RAM usage, drawing, erasure, and collision reads are traced. |
 | [Objects and gameplay](#object-lifecycles) | The 25-byte object ABI, three scheduler pools, nine object types, movement, collision, scoring, overlays, patrol completion, and torpedo/target/mine/Super Sub lifecycles are mapped. |
-| [Cabinet and controls](#cabinet-inputs-dip-switches-and-station-ownership) | Handle/start/coin inputs, S1 operator switches, service selection, station ownership, Gray-code decoding, the 32-way aim clamp, trajectories, and language contacts are resolved. The MAME French-contact correction has been submitted upstream. |
+| [Cabinet and controls](#cabinet-inputs-dip-switches-and-station-ownership) | Handle/start/coin inputs, S1 operator switches, service selection, station ownership, Gray-code decoding, the 32-way aim clamp, trajectories, and language contacts are resolved. The French-contact correction is tracked by [MAME PR #15989](https://github.com/mamedev/mame/pull/15989). |
 | [Graphics and text](#structured-graphics-and-tables) | All 43 font glyphs, localized prompts, status graphics, 26 referenced object descriptors, two unreferenced descriptors, self-test patterns, and both trajectory tables are bounded and labeled. |
 | [Sound](#discrete-sound-control) | Frame-owned sound timers, port `$40/$41` packing, sonar, hit, torpedo, dive, and coin-counter timing are documented. |
 | [Residual data](#remaining-raw-data) | The 2,759 remaining `DB` bytes are classified as TERSE operands, tables, graphics/text, or fill, except for the single uncertain byte at `$1385`. |
@@ -815,8 +815,9 @@ selects one of the English, German, or French prompt-pointer groups.
 
 MAME 0.289 defines the German contact correctly but places the French contact
 on port `$10` bit 6. The ROM never reads that bit, so MAME's French setting
-displays English prompts. The supplied MAME driver patch moves only that
-contact to port `$11` bit 6; no ROM change is required.
+displays English prompts. [MAME PR #15989](https://github.com/mamedev/mame/pull/15989)
+moves only that contact to port `$11` bit 6; no ROM change is required. At this
+README revision, the PR is awaiting approval and merge.
 
 ### Station ownership
 
@@ -1496,6 +1497,7 @@ material:
 ### Emulator source
 
 - [MAME `astrocde.cpp` driver](https://github.com/mamedev/mame/blob/master/src/mame/bally/astrocde.cpp)
+- [MAME PR #15989 — bally/astrocde.cpp: Fix Sea Wolf II French language DIP switch](https://github.com/mamedev/mame/pull/15989)
 
 ### Bally Alley
 
