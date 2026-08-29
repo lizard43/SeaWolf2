@@ -4,17 +4,14 @@ This project is a byte-exact reconstruction and reverse-engineering baseline for
 
 Sea Wolf II is a notable DNA title because most of the game is implemented in TERSE, DNA's direct-threaded Z80 language. 
 
-The original game was designed and programmed by a primary duo:
+The original game was designed and programmed by:
 - Dave Nutting (Game Designer)
 - Tom McHugh (Principal Programmer)
-- Alan McNeil - the famous creator of Berzerk was also heavily involved at DNA during this era. McNeil is actually the genius who created and programmed the TERSE language (which stands for Terse Efficient Recursive Stack Engine). He assisted with the engineering, hardware systems, and programming framework for both Sea Wolf II and Boot Hill before leaving DNA.
-
-## Reverse Engineering (RE) Status
+- Alan McNeil - the creator of Berzerk created and programmed the TERSE (Terse Efficient Recursive Stack Engine) language. He assisted with the engineering, hardware systems, and programming framework for both Sea Wolf II and Boot Hill before leaving DNA.
 
 |  |  |
 | --- | --- |
-| [ROM identity and build](#rom-organization) | All four source ROMs retain the canonical MAME CRC32/SHA1 values. zmac 1.3 produces the byte-identical 8 KB image, which runs in MAME 0.289. |
-| [Objects and gameplay](#object-lifecycles) | The 25-byte object ABI, three scheduler pools, nine object types, movement, collision, scoring, overlays, patrol completion, and torpedo/target/mine/Super Sub lifecycles are mapped. |
+| [ROM identity and build](#rom-organization) | zmac 1.3 produces the 8 KB image that matches the original RC32/SHA1 value
 | [Graphics and text](#structured-graphics-and-tables) | 43 font glyphs, localized prompts, status graphics, 26 referenced object descriptors, 2 unreferenced descriptors, self-test patterns, and both trajectory tables are bounded and labeled. |
 | [Sound](#discrete-sound-control) | Sound timers, port `$40/$41` packing, sonar, hit, torpedo, dive, and coin-counter timing are documented. |
 | [TERSE](#terse-execution-architecture) | 11 kernel primitives, 21 native application words, six threaded programs, inline operands, calling conventions, register preservation, interrupt interaction, and maximum stack depths are documented. |
@@ -22,6 +19,7 @@ The original game was designed and programmed by a primary duo:
 | [RAM and I/O](#ram-and-io-ownership) | Every live byte from `$C000-$C221`, work-RAM clear domains, stack reserve, aliases, raster records, object padding, reset-only cells, and ROM-used I/O ports are assigned or formally classified. |
 | [Video and raster](#raster-interrupt-scheduler) | Both 6-entry schedules, IM 2 selection, interrupt handlers, moving split lines, Function Generator modes, Magic RAM usage, drawing, erasure, and collision reads are traced. |
 | [Cabinet and controls](#cabinet-inputs-dip-switches-and-station-ownership) | Handle/start/coin inputs, S1 operator switches, service selection, station ownership, Gray-code decoding, the 32-way aim clamp, trajectories, and language contacts are resolved. The French-contact correction is tracked by [MAME PR #15989](https://github.com/mamedev/mame/pull/15989). |
+| [Objects and gameplay](#object-lifecycles) | The 25-byte object ABI, three scheduler pools, nine object types, movement, collision, scoring, overlays, patrol completion, and torpedo/target/mine/Super Sub lifecycles are mapped. |
 | [Residual data](#remaining-raw-data) | All 2,761 remaining `DB` bytes are classified as TERSE operands, tables, graphics/text, padding, or checksum-balancing filler. No uncertain byte remains. |
 
 ## Project layout
