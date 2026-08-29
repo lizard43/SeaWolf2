@@ -2,7 +2,13 @@
 
 This project is a byte-exact reconstruction and reverse-engineering baseline for **Sea Wolf II**, released by Dave Nutting Associates (DNA) / Midway in 1978.
 
-Sea Wolf II is a notable DNA title because most of the game is implemented in TERSE, DNA's direct-threaded Z80 language. 
+Sea Wolf II is a notable DNA title because it was the **first commercial arcade game** to use the DNA Astrocade hardware platform. 
+
+And the **first game to be implemented in TERSE**, DNA's direct-threaded Z80 language. 
+
+Sea Wolf II debuted the 16K commercial version of the Astrocade board in arcades. It ran on a Zilog Z80 CPU and natively utilized the trademark "Magic System" Function Generator. 
+
+This hardware arrangement bypassed standard sprite chips by allowing the CPU to map transparently to a special "magic memory" region, automatically handling high-speed pixel shifting, expanding, mirroring, and combining directly onto the bitmapped frame buffer.
 
 The original game was designed and programmed by:
 - Dave Nutting (Game Designer)
